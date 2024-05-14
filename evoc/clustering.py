@@ -198,19 +198,98 @@ def binary_search_for_n_clusters(
 
 def evoc_clusters(
     data,
-    n_neighbors=15,
     noise_level=0.5,
     base_min_cluster_size=5,
     min_num_clusters=4,
     approx_n_clusters=None,
-    next_cluster_size_quantile=0.8,
+    n_neighbors=15,
     min_samples=5,
+    next_cluster_size_quantile=0.8,
     n_epochs=50,
     node_embedding_init="label_prop",
     symmetrize_graph=True,
     node_embedding_dim=None,
     neighbor_scale=1.0,
 ):
+    """Cluster data using the EVoC algorithm.
+    
+    Parameters
+    ----------
+
+    data : array-like of shape (n_samples, n_features)
+        The data to cluster. If the data is float valued then it is assumed to use
+        cosine distance as a matric. If the data is int8 valued then it is assumed 
+        that a quantized embedding is being used and a quantized version of cosine
+        distance is used. If the data is uint8 valued then it is assumed that a
+        binary embedding is being used, and a bitwise Jaccard distance is used.
+
+    noise_level : float, default=0.5
+        The noise level expected in the data. A value of 0.0 will try to cluster
+        more data, at the expense of getting less accurate clustering. A value of
+        1.0 will try for accurate clusters, discarding more data as noise to do so.
+
+    base_min_cluster_size : int, default=5
+        The minimum number of points in a cluster at the base layer of the clustering.
+        This gives the finest granularity clustering that will be returned, with less 
+        graularity at higher layers.
+
+    min_num_clusters : int, default=4
+        The minimum number of clusters in the least granular layer of the clustering.
+        Once a layer produces this many clusters or less no further layers will be
+        produced.
+
+    approx_n_clusters : int, default=None
+        If not None, the algorithm will attempt to find the granularity of 
+        clustering that will give exactly this many clusters. Since the actual
+        number of clusters cannot be guaranteed this is only approximate, but
+        usually the algorithm can manage to get this exact number, assuming a
+        resonable clustering into ``approx_n_clusters`` exists. When not None
+        only this granularity will be returned -- no other cluster layers
+        will be produced.
+
+    n_neighbors : int, default=15
+        The number of neighbors to use in the nearest neighbor graph construction.
+
+    min_samples : int, default=5
+        The minimum number of samples to use in the density estimation when
+        performing density based clustering on the node embedding.
+
+    next_cluster_size_quantile : float, default=0.8
+        The quantile of cluster sizes to use when determining the minimum cluster
+        size for the next layer of clustering. This is used to determine the
+        granularity of clustering at each layer.
+
+    n_epochs : int, default=50
+        The number of epochs to use when training the node embedding.
+
+    node_embedding_init : str or None, default='label_prop'
+        The method to use to initialize the node embedding. If None, no initialization
+        will be used. If 'label_prop', the label propagation method will be used.
+
+    symmetrize_graph : bool, default=True
+        Whether to symmetrize the nearest neighbor graph before using it to
+        construct the node embedding.
+
+    node_embedding_dim : int or None, default=None
+        The number of dimensions to use in the node embedding. If None, a default
+        value of min(n_neighbors, 15) will be used.
+
+    neighbor_scale : float, default=1.0
+        The scale factor to use when constructing the nearest neighbor graph. This
+        can be used to increase the number of neighbors used in the graph construction
+        by scaling the number of neighbors by this factor.
+
+    Returns
+    -------
+
+    cluster_layers : list of array-like of shape (n_samples,)
+        The clustering of the data at each layer of the clustering. Each layer
+        is a clustering of the data into a different number of clusters.
+
+    membership_strengths : list of array-like of shape (n_samples,)
+        The membership strengths of each point in the clustering at each layer.
+        This gives a measure of how strongly each point belongs to each cluster.
+    """
     nn_inds, nn_dists = knn_graph(data, n_neighbors=n_neighbors)
     graph = neighbor_graph_matrix(
         neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
@@ -258,15 +337,104 @@ def evoc_clusters(
 
 
 class EVoC (BaseEstimator, ClusterMixin):
+    """
+    Embedding Vector Oriented Clustering for efficient clustering of high-dimensional
+    embedding vectors such as CLIP-vectors, sentence-transformers output, etc. The
+    clustering uses a combination of a node embedding of a nearest neighbour graph, 
+    related to UMAP, and a density based clustering approach related to HDBSCAN,
+    improving upon those approaches in efficiency and quality for the specific case
+    of high-dimensional embedding vectors.
+
+    Parameters
+    ----------
+
+    noise_level : float, default=0.5
+        The noise level expected in the data. A value of 0.0 will try to cluster
+        more data, at the expense of getting less accurate clustering. A value of
+        1.0 will try for accurate clusters, discarding more data as noise to do so.
+
+    base_min_cluster_size : int, default=5
+        The minimum number of points in a cluster at the base layer of the clustering.
+        This gives the finest granularity clustering that will be returned, with less 
+        graularity at higher layers.
+
+    min_num_clusters : int, default=4
+        The minimum number of clusters in the least granular layer of the clustering.
+        Once a layer produces this many clusters or less no further layers will be
+        produced.
+
+    approx_n_clusters : int, default=None
+        If not None, the algorithm will attempt to find the granularity of 
+        clustering that will give exactly this many clusters. Since the actual
+        number of clusters cannot be guaranteed this is only approximate, but
+        usually the algorithm can manage to get this exact number, assuming a
+        resonable clustering into ``approx_n_clusters`` exists. When not None
+        only this granularity will be returned -- no other cluster layers
+        will be produced.
+
+    n_neighbors : int, default=15
+        The number of neighbors to use in the nearest neighbor graph construction.
+
+    min_samples : int, default=5
+        The minimum number of samples to use in the density estimation when
+        performing density based clustering on the node embedding.
+
+    next_cluster_size_quantile : float, default=0.8
+        The quantile of cluster sizes to use when determining the minimum cluster
+        size for the next layer of clustering. This is used to determine the
+        granularity of clustering at each layer.
+
+    n_epochs : int, default=50
+        The number of epochs to use when training the node embedding.
+
+    node_embedding_init : str or None, default='label_prop'
+        The method to use to initialize the node embedding. If None, no initialization
+        will be used. If 'label_prop', the label propagation method will be used.
+
+    symmetrize_graph : bool, default=True
+        Whether to symmetrize the nearest neighbor graph before using it to
+        construct the node embedding.
+
+    node_embedding_dim : int or None, default=None
+        The number of dimensions to use in the node embedding. If None, a default
+        value of min(n_neighbors, 15) will be used.
+
+    neighbor_scale : float, default=1.0
+        The scale factor to use when constructing the nearest neighbor graph. This
+        can be used to increase the number of neighbors used in the graph construction
+        by scaling the number of neighbors by this factor.
+
+    Attributes
+    ----------
+
+    labels_ : array-like of shape (n_samples,)
+        An array of labels for the data samples; this is a integer array as per other scikit-learn
+        clustering algorithms. A value of -1 indicates that a point is a noise point and
+        not in any cluster.
+
+    membership_strengths_ : array-like of shape (n_samples,)
+        An array of membership strengths for the data samples; this gives a measure of how
+        strongly each point belongs to each cluster. This is a floating point array with
+        values between 0 and 1.
+
+    cluster_layers_ : list of array-like of shape (n_samples,)
+        The clustering of the data at each layer of the clustering. Each layer
+        is a clustering of the data into a different number of clusters; the earlier the
+        cluster vector is in this list the finer the granularity of clustering.
+
+    membership_strength_layers_ : list of array-like of shape (n_samples,)
+        The membership strengths of each point in the clustering at each layer.
+
+    """
     def __init__(
         self,
-        n_neighbors=15,
         noise_level=0.5,
         base_min_cluster_size=5,
         min_num_clusters=4,
         approx_n_clusters=None,
-        next_cluster_size_quantile=0.8,
+        n_neighbors=15,
         min_samples=5,
+        next_cluster_size_quantile=0.8,
         n_epochs=50,
         node_embedding_init="label_prop",
         symmetrize_graph=True,
@@ -287,6 +455,31 @@ class EVoC (BaseEstimator, ClusterMixin):
         self.neighbor_scale = neighbor_scale
 
     def fit_predict(self, X, y=None, **fit_params):
+        """Fit the model to the data and return the clustering labels.
+        
+        Parameters
+        ----------
+        
+        X : array-like of shape (n_samples, n_features)
+            The data to cluster. If the data is float valued then it is assumed to use
+            cosine distance as a matric. If the data is int8 valued then it is assumed 
+            that a quantized embedding is being used and a quantized version of cosine
+            distance is used. If the data is uint8 valued then it is assumed that a
+            binary embedding is being used, and a bitwise Jaccard distance is used.
+
+        y : array-like of shape (n_samples,), default=None
+            Ignored. This parameter exists only for compatibility with
+            scikit-learn's fit_predict method.
+
+        Returns
+        -------
+
+        labels_ : array-like of shape (n_samples,)
+            An array of labels for the data samples; this is a integer array as per other scikit-learn
+            clustering algorithms. A value of -1 indicates that a point is a noise point and
+            not in any cluster.
+
+        """
 
         X = check_array(X)
 
@@ -320,6 +513,28 @@ class EVoC (BaseEstimator, ClusterMixin):
         return self.labels_
 
     def fit(self, X, y=None, **fit_params):
+        """Fit the model to the data.
+        
+        Parameters
+        ----------
+
+        X : array-like of shape (n_samples, n_features)
+            The data to cluster. If the data is float valued then it is assumed to use
+            cosine distance as a matric. If the data is int8 valued then it is assumed 
+            that a quantized embedding is being used and a quantized version of cosine
+            distance is used. If the data is uint8 valued then it is assumed that a
+            binary embedding is being used, and a bitwise Jaccard distance is used.
+
+        y : array-like of shape (n_samples,), default=None
+            Ignored. This parameter exists only for compatibility with
+            scikit-learn's fit method.
+
+        Returns
+        -------
+
+        self : sklearn Estimator
+            Returns the instance itself.
+        """
         self.fit_predict(X, y, **fit_params)
         return self
 
