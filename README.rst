@@ -87,7 +87,7 @@ For now install the latest version of EVōC from source you can do so by cloning
 
 .. code-block:: bash
 
-    git clone
+    git clone https://github.com/TutteInstitute/evoc
     cd evoc
     pip install .
 
