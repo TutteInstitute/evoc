@@ -77,13 +77,13 @@ EVōC has a small set of dependencies:
  * tqdm
  * tbb
 
-You can install EVōC from PyPI using pip:
+At some point in the near future ... you can install EVōC from PyPI using pip:
 
 .. code-block:: bash
 
     pip install evoc
 
-If you want to install the latest version of EVōC from source you can do so by cloning the repository and running:
+For now install the latest version of EVōC from source you can do so by cloning the repository and running:
 
 .. code-block:: bash
 
