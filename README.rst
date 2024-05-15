@@ -61,7 +61,7 @@ the ability to extract a hierarchy of clusters across those layers, and automati
 The cluster layers are a list of cluster label vectors with the first being the finest grained
 and later layers being coarser grained. This is ideal for layered topic modelling and use with
 `DataMapPlot <https://github.com/TutteInstitute/datamapplot>`_. See 
-`this data map <https://lmcinnes.github.io/datamapplot_examples/ArXiv_data_map_example.html>` 
+`this data map <https://lmcinnes.github.io/datamapplot_examples/ArXiv_data_map_example.html>`_
 for an example of using these layered clusters in topic modelling (zoom in to access finer 
 grained topics).
 
