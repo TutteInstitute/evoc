@@ -107,7 +107,7 @@ def compute_membership_strengths(
                 continue  # We didn't get the full knn for i
             elif idx == i:
                 val = 0.0
-            elif idx - rho <= 0.0 or sigma == 0.0:
+            elif (knn_dists[i, j] - rho) <= 0.0 or sigma == 0.0:
                 val = 1.0
             else:
                 val = np.exp(-((knn_dists[i, j] - rhos[i]) / (sigma)))
