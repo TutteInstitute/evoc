@@ -3,6 +3,7 @@ import numba
 
 from sklearn.base import BaseEstimator, ClusterMixin
 from sklearn.utils import check_array
+from sklearn.utils.validation import check_is_fitted
 from sklearn.neighbors import KDTree
 
 from .numba_kdtree import kdtree_to_numba
@@ -64,6 +65,24 @@ def build_cluster_layers(
         n_clusters_in_layer = clusters.max() + 1
 
     return cluster_layers, membership_strength_layers
+
+
+@numba.njit()
+def find_duplicates(knn_inds, knn_dists):
+    duplicate_distance = np.max(knn_dists.T[0])
+    duplicates = set([(-1, -1) for i in range(0)])
+    for i in range(knn_inds.shape[0]):
+        for j in range(0, knn_inds.shape[1]):
+            if knn_dists[i, j] <= duplicate_distance:
+                k = knn_inds[i, j]
+                if i < k:
+                    duplicates.add((i, k))
+                elif k < i:
+                    duplicates.add((k, i))
+                else:
+                    continue
+
+    return duplicates
 
 
 @numba.njit()
@@ -208,17 +227,18 @@ def evoc_clusters(
     n_epochs=50,
     node_embedding_init="label_prop",
     symmetrize_graph=True,
+    return_duplicates=False,
     node_embedding_dim=None,
     neighbor_scale=1.0,
 ):
     """Cluster data using the EVoC algorithm.
-    
+
     Parameters
     ----------
 
     data : array-like of shape (n_samples, n_features)
         The data to cluster. If the data is float valued then it is assumed to use
-        cosine distance as a matric. If the data is int8 valued then it is assumed 
+        cosine distance as a matric. If the data is int8 valued then it is assumed
         that a quantized embedding is being used and a quantized version of cosine
         distance is used. If the data is uint8 valued then it is assumed that a
         binary embedding is being used, and a bitwise Jaccard distance is used.
@@ -230,7 +250,7 @@ def evoc_clusters(
 
     base_min_cluster_size : int, default=5
         The minimum number of points in a cluster at the base layer of the clustering.
-        This gives the finest granularity clustering that will be returned, with less 
+        This gives the finest granularity clustering that will be returned, with less
         graularity at higher layers.
 
     min_num_clusters : int, default=4
@@ -239,7 +259,7 @@ def evoc_clusters(
         produced.
 
     approx_n_clusters : int, default=None
-        If not None, the algorithm will attempt to find the granularity of 
+        If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters. Since the actual
         number of clusters cannot be guaranteed this is only approximate, but
         usually the algorithm can manage to get this exact number, assuming a
@@ -270,6 +290,9 @@ def evoc_clusters(
         Whether to symmetrize the nearest neighbor graph before using it to
         construct the node embedding.
 
+    return_duplicates : bool, default=False
+        Whether to return a set of duplicate pairs of points in the data.
+
     node_embedding_dim : int or None, default=None
         The number of dimensions to use in the node embedding. If None, a default
         value of min(n_neighbors, 15) will be used.
@@ -289,6 +312,10 @@ def evoc_clusters(
     membership_strengths : list of array-like of shape (n_samples,)
         The membership strengths of each point in the clustering at each layer.
         This gives a measure of how strongly each point belongs to each cluster.
+
+    duplicates : set of tuple of int
+        Only returned in ``return_duplicates`` is True. A set of pairs of indices of
+        potential duplicate points in the data.
     """
     nn_inds, nn_dists = knn_graph(data, n_neighbors=n_neighbors)
     graph = neighbor_graph_matrix(
@@ -317,13 +344,19 @@ def evoc_clusters(
         verbose=False,
     )
 
+    if return_duplicates:
+        duplicates = find_duplicates(nn_inds, nn_dists)
+
     if approx_n_clusters is not None:
         cluster_vector, strengths = binary_search_for_n_clusters(
             embedding,
             approx_n_clusters,
             min_samples=min_samples,
         )
-        return [cluster_vector], [strengths]
+        if return_duplicates:
+            return [cluster_vector], [strengths], duplicates
+        else:
+            return [cluster_vector], [strengths]
     else:
         cluster_layers, membership_strengths = build_cluster_layers(
             embedding,
@@ -332,15 +365,17 @@ def evoc_clusters(
             base_min_cluster_size=base_min_cluster_size,
             next_cluster_size_quantile=next_cluster_size_quantile,
         )
-        
-        return cluster_layers, membership_strengths
+        if return_duplicates:
+            return cluster_layers, membership_strengths, duplicates
+        else:
+            return cluster_layers, membership_strengths
 
 
-class EVoC (BaseEstimator, ClusterMixin):
+class EVoC(BaseEstimator, ClusterMixin):
     """
     Embedding Vector Oriented Clustering for efficient clustering of high-dimensional
     embedding vectors such as CLIP-vectors, sentence-transformers output, etc. The
-    clustering uses a combination of a node embedding of a nearest neighbour graph, 
+    clustering uses a combination of a node embedding of a nearest neighbour graph,
     related to UMAP, and a density based clustering approach related to HDBSCAN,
     improving upon those approaches in efficiency and quality for the specific case
     of high-dimensional embedding vectors.
@@ -355,7 +390,7 @@ class EVoC (BaseEstimator, ClusterMixin):
 
     base_min_cluster_size : int, default=5
         The minimum number of points in a cluster at the base layer of the clustering.
-        This gives the finest granularity clustering that will be returned, with less 
+        This gives the finest granularity clustering that will be returned, with less
         graularity at higher layers.
 
     min_num_clusters : int, default=4
@@ -364,7 +399,7 @@ class EVoC (BaseEstimator, ClusterMixin):
         produced.
 
     approx_n_clusters : int, default=None
-        If not None, the algorithm will attempt to find the granularity of 
+        If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters. Since the actual
         number of clusters cannot be guaranteed this is only approximate, but
         usually the algorithm can manage to get this exact number, assuming a
@@ -425,7 +460,15 @@ class EVoC (BaseEstimator, ClusterMixin):
     membership_strength_layers_ : list of array-like of shape (n_samples,)
         The membership strengths of each point in the clustering at each layer.
 
+    cluster_tree_ : dict
+        A dictionary representing the hierarchical clustering of the data. The keys are
+        tuples of (layer, cluster) and the values are lists of tuples of (layer, cluster)
+        representing the children of the key cluster.
+
+    duplicates_ : set of tuple of int
+        A set of pairs of indices of potential duplicate points in the data.
     """
+
     def __init__(
         self,
         noise_level=0.5,
@@ -456,13 +499,13 @@ class EVoC (BaseEstimator, ClusterMixin):
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
-        
+
         Parameters
         ----------
-        
+
         X : array-like of shape (n_samples, n_features)
             The data to cluster. If the data is float valued then it is assumed to use
-            cosine distance as a matric. If the data is int8 valued then it is assumed 
+            cosine distance as a matric. If the data is int8 valued then it is assumed
             that a quantized embedding is being used and a quantized version of cosine
             distance is used. If the data is uint8 valued then it is assumed that a
             binary embedding is being used, and a bitwise Jaccard distance is used.
@@ -483,20 +526,23 @@ class EVoC (BaseEstimator, ClusterMixin):
 
         X = check_array(X)
 
-        self.cluster_layers_, self.membership_strength_layers_ = evoc_clusters(
-            X,
-            n_neighbors=self.n_neighbors,
-            noise_level=self.noise_level,
-            base_min_cluster_size=self.base_min_cluster_size,
-            min_num_clusters=self.min_num_clusters,
-            approx_n_clusters=self.approx_n_clusters,
-            next_cluster_size_quantile=self.next_cluster_size_quantile,
-            min_samples=self.min_samples,
-            n_epochs=self.n_epochs,
-            node_embedding_init=self.node_embedding_init,
-            symmetrize_graph=self.symmetrize_graph,
-            node_embedding_dim=self.node_embedding_dim,
-            neighbor_scale=self.neighbor_scale,
+        self.cluster_layers_, self.membership_strength_layers_, self.duplicates_ = (
+            evoc_clusters(
+                X,
+                n_neighbors=self.n_neighbors,
+                noise_level=self.noise_level,
+                base_min_cluster_size=self.base_min_cluster_size,
+                min_num_clusters=self.min_num_clusters,
+                approx_n_clusters=self.approx_n_clusters,
+                next_cluster_size_quantile=self.next_cluster_size_quantile,
+                min_samples=self.min_samples,
+                n_epochs=self.n_epochs,
+                node_embedding_init=self.node_embedding_init,
+                symmetrize_graph=self.symmetrize_graph,
+                return_duplicates=True,
+                node_embedding_dim=self.node_embedding_dim,
+                neighbor_scale=self.neighbor_scale,
+            )
         )
 
         if len(self.cluster_layers_) == 1:
@@ -514,13 +560,13 @@ class EVoC (BaseEstimator, ClusterMixin):
 
     def fit(self, X, y=None, **fit_params):
         """Fit the model to the data.
-        
+
         Parameters
         ----------
 
         X : array-like of shape (n_samples, n_features)
             The data to cluster. If the data is float valued then it is assumed to use
-            cosine distance as a matric. If the data is int8 valued then it is assumed 
+            cosine distance as a matric. If the data is int8 valued then it is assumed
             that a quantized embedding is being used and a quantized version of cosine
             distance is used. If the data is uint8 valued then it is assumed that a
             binary embedding is being used, and a bitwise Jaccard distance is used.
@@ -538,3 +584,12 @@ class EVoC (BaseEstimator, ClusterMixin):
         self.fit_predict(X, y, **fit_params)
         return self
 
+    @property
+    def cluster_tree_(self):
+        check_is_fitted(
+            self,
+            "cluster_layers_",
+            msg="This %(name)s instance is not fitted yet, and 'cluster_tree_' is not available. "
+            "Please call 'fit' with appropriate arguments before accessing this attribute.",
+        )
+        return build_cluster_tree(self.cluster_layers_)
