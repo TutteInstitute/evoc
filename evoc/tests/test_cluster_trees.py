@@ -7,3 +7,17 @@ from evoc.cluster_trees import (
     mst_to_linkage_tree,
 )
 
+from sklearn.datasets import make_blobs
+from sklearn.utils import shuffle
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import pairwise_distances
+
+import scipy.sparse
+
+
+n_clusters = 3
+# X = generate_clustered_data(n_clusters=n_clusters, n_samples_per_cluster=50)
+X, y = make_blobs(n_samples=200, random_state=10)
+X, y = shuffle(X, y, random_state=7)
+X = StandardScaler().fit_transform(X)
+
