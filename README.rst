@@ -21,6 +21,9 @@ EVōC is the library to use if you want:
  * Multi-granularity clustering, and automatic selection of the number of clusters
  * Clustering of int8 or binary quantized embedding vectors that works out-of-the-box
 
+ As of now this is very much an early beta version of the library. Things can and will break right now.
+ We would welcome feedback, use cases and feature suggestions however.
+
 -----------
 Basic Usage
 -----------
@@ -37,6 +40,30 @@ you might have previously been using other sklearn clustering algorithms. Here i
 
     clusterer = evoc.EVoC()
     cluster_labels = clusterer.fit_predict(data)
+
+Some more unique features include the generation of multiple layers of cluster granularity,
+the ability to extract a hierarchy of clusters across those layers, and automatic duplicate 
+(or very near duplicate) detection.
+
+.. code-block:: python
+
+    import evoc
+    from sklearn.datasets import make_blobs
+
+    data, _ = make_blobs(n_samples=100_000, n_features=1024, centers=100)
+
+    clusterer = evoc.EVoC()
+    cluster_labels = clusterer.fit_predict(data)
+    cluster_layers = clusterer.cluster_layers_
+    hierarchy = clusterer.hierarchy_
+    potential_duplicates = clusterer.duplicates_
+
+The cluster layers are a list of cluster label vectors with the first being the finest grained
+and later layers being coarser grained. This is ideal for layered topic modelling and use with
+`DataMapPlot <https://github.com/TutteInstitute/datamapplot>`_. See 
+`this data map <https://lmcinnes.github.io/datamapplot_examples/ArXiv_data_map_example.html>` 
+for an example of using these layered clusters in topic modelling (zoom in to access finer 
+grained topics).
 
 ------------
 Installation
