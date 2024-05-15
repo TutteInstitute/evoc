@@ -1,1 +1,1 @@
-from .clustering import evoc_clusters
+from .clustering import evoc_clusters, EVoC
