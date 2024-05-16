@@ -21,3 +21,7 @@ X, y = make_blobs(n_samples=200, random_state=10)
 X, y = shuffle(X, y, random_state=7)
 X = StandardScaler().fit_transform(X)
 
+# Remove this when there are actual tests
+def test_noop():
+    pass
+
