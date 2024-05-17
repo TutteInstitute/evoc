@@ -55,7 +55,7 @@ the ability to extract a hierarchy of clusters across those layers, and automati
     clusterer = evoc.EVoC()
     cluster_labels = clusterer.fit_predict(data)
     cluster_layers = clusterer.cluster_layers_
-    hierarchy = clusterer.hierarchy_
+    hierarchy = clusterer.cluster_tree_
     potential_duplicates = clusterer.duplicates_
 
 The cluster layers are a list of cluster label vectors with the first being the finest grained
