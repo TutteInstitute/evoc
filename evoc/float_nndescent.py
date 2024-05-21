@@ -200,6 +200,7 @@ def float_random_projection_split(data, indices, rng_state):
     ),
     nogil=True,
     locals={"left_indices": numba.int32[::1], "right_indices": numba.int32[::1]},
+    cache=False,
 )
 def make_float_tree(
     data,
@@ -261,7 +262,8 @@ def make_float_tree(
     ),
     nogil=True,
     locals={"n_leaves": numba.uint32},
-    parallel=True,
+    parallel=False,
+    cache=True,
 )
 def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
@@ -280,12 +282,14 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     n_leaves = len(point_indices)
 
     max_leaf_size = leaf_size
-    for i in numba.prange(n_leaves):
+    # for i in numba.prange(n_leaves):
+    for i in range(n_leaves):
         points = point_indices[i]
         max_leaf_size = max(max_leaf_size, numba.uint32(len(points)))
 
     result = np.full((n_leaves, max_leaf_size), -1, dtype=np.int32)
-    for i in numba.prange(n_leaves):
+    # for i in numba.prange(n_leaves):
+    for i in range(n_leaves):
         points = point_indices[i]
         leaf_size = numba.uint32(len(points))
         result[i, :leaf_size] = points
@@ -297,10 +301,11 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     numba.types.List(numba.int32[:, ::1])(
         numba.types.Array(numba.types.float32, 2, "C", readonly=True),
         numba.int64[:, ::1],
-        numba.int64,
-        numba.int64,
+        numba.uint64,
+        numba.uint64,
     ),
     parallel=True,
+    cache=True,
 )
 def make_float_forest(data, rng_states, leaf_size, max_depth):
     result = [np.empty((1, 1), dtype=np.int32)] * rng_states.shape[0]
@@ -331,6 +336,7 @@ def make_float_forest(data, rng_states, leaf_size, max_depth):
         "idx": numba.uint32,
         "data_p": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
     },
+    cache=True,
 )
 def generate_leaf_updates_float(
     updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
@@ -389,6 +395,7 @@ def generate_leaf_updates_float(
             (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
         ),
         numba.types.Array(numba.types.int32, 2, "C", readonly=True),
+        numba.types.int32,
     ),
     locals={
         "d": numba.float32,
@@ -399,12 +406,12 @@ def generate_leaf_updates_float(
         "n_updates_per_thread": numba.int32[::1],
     },
     parallel=True,
+    cache=True,
 )
-def init_rp_tree_float(data, current_graph, leaf_array):
+def init_rp_tree_float(data, current_graph, leaf_array, n_threads):
     n_leaves = leaf_array.shape[0]
     block_size = 64
     n_blocks = n_leaves // block_size
-    n_threads = numba.get_num_threads()
 
     max_leaf_size = leaf_array.shape[1]
     updates_per_thread = (
@@ -463,6 +470,7 @@ def init_rp_tree_float(data, current_graph, leaf_array):
     ),
     fastmath=True,
     locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32},
+    cache=True,
 )
 def init_random_float(n_neighbors, data, heap, rng_state):
     for i in range(data.shape[0]):
@@ -491,6 +499,7 @@ def init_random_float(n_neighbors, data, heap, rng_state):
         "data_p": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
     },
     parallel=True,
+    cache=True,
 )
 def generate_graph_update_array_float(
     update_array,
@@ -604,8 +613,9 @@ def nn_descent_float(
     Returns:
     - The sorted nearest neighbor graph.
     """
+    n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_float(data, current_graph, leaf_array)
+    init_rp_tree_float(data, current_graph, leaf_array, n_threads)
     init_random_float(n_neighbors, data, current_graph, rng_state)
 
     n_vertices = data.shape[0]

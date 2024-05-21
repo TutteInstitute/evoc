@@ -4,7 +4,7 @@ import numpy as np
 from .disjoint_set import ds_rank_create, ds_find, ds_union_by_rank
 from .numba_kdtree import parallel_tree_query, rdist, point_to_node_lower_bound_rdist
 
-@numba.njit(locals={"i": numba.types.int64})
+@numba.njit(locals={"i": numba.types.int64}, cache=True)
 def merge_components(disjoint_set, candidate_neighbors, candidate_neighbor_distances, point_components):
     component_edges = {np.int64(0): (np.int64(0), np.int64(1), np.float32(0.0)) for i in range(0)}
 
@@ -33,7 +33,7 @@ def merge_components(disjoint_set, candidate_neighbors, candidate_neighbor_dista
     return result[:result_idx]
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def update_component_vectors(tree, disjoint_set, node_components, point_components):
     for i in numba.prange(point_components.shape[0]):
         point_components[i] = ds_find(disjoint_set, np.int32(i))
@@ -64,7 +64,7 @@ def update_component_vectors(tree, disjoint_set, node_components, point_componen
                 node_components[i] = node_components[left]
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def component_aware_query_recursion(
         tree,
         node,
@@ -187,7 +187,7 @@ def component_aware_query_recursion(
     return
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def boruvka_tree_query(tree, node_components, point_components, core_distances):
     candidate_distances = np.full(tree.data.shape[0], np.inf, dtype=np.float32)
     candidate_indices = np.full(tree.data.shape[0], -1, dtype=np.int32)
@@ -217,7 +217,7 @@ def boruvka_tree_query(tree, node_components, point_components, core_distances):
     return candidate_distances, candidate_indices
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disjoint_set):
     # component_edges = {0:(np.int32(0), np.int32(1), np.float32(0.0)) for i in range(0)}
     component_edges = np.full((knn_indices.shape[0], 3), -1, dtype=np.float64)

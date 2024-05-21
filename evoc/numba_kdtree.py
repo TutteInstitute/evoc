@@ -21,6 +21,7 @@ def kdtree_to_numba(sklearn_kdtree):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True
 )
 def rdist(x, y):
     result = 0.0
@@ -43,6 +44,7 @@ def rdist(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True
 )
 def point_to_node_lower_bound_rdist(upper, lower, pt):
     result = 0.0
@@ -69,6 +71,7 @@ def point_to_node_lower_bound_rdist(upper, lower, pt):
         "ic2": numba.types.uint16,
         "i_swap": numba.types.uint16,
     },
+    cache=True
 )
 def simple_heap_push(priorities, indices, p, n):
     if p >= priorities[0]:
@@ -115,7 +118,7 @@ def simple_heap_push(priorities, indices, p, n):
     return 1
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def siftdown(heap1, heap2, elt):
     while elt * 2 + 1 < heap1.shape[0]:
         left_child = elt * 2 + 1
@@ -136,7 +139,7 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def deheap_sort(distances, indices):
     for i in numba.prange(indices.shape[0]):
         # starting from the end of the array and moving back
@@ -156,7 +159,8 @@ def deheap_sort(distances, indices):
         "right": numba.types.intp,
         "d": numba.types.float32,
         "idx": numba.types.uint32,
-    }
+    },
+    cache=True
 )
 def tree_query_recursion(
         tree,
@@ -205,7 +209,7 @@ def tree_query_recursion(
     return
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def parallel_tree_query(tree, data, k=10, output_rdist=False):
     result = (np.full((data.shape[0], k), np.inf, dtype=np.float32), np.full((data.shape[0], k), -1, dtype=np.int32))
 

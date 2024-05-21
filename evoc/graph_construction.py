@@ -19,6 +19,7 @@ NPY_INFINITY = np.inf
     },
     fastmath=True,
     parallel=True,
+    cache=True,
 )
 def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0):
     target = np.log2(k) * bandwidth
@@ -84,6 +85,7 @@ def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0):
     },
     parallel=True,
     fastmath=True,
+    cache=True,
 )
 def compute_membership_strengths(
     knn_indices,

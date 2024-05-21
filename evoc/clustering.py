@@ -67,7 +67,7 @@ def build_cluster_layers(
     return cluster_layers, membership_strength_layers
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def find_duplicates(knn_inds, knn_dists):
     duplicate_distance = np.max(knn_dists.T[0])
     duplicates = set([(-1, -1) for i in range(0)])
@@ -85,7 +85,7 @@ def find_duplicates(knn_inds, knn_dists):
     return duplicates
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def _build_cluster_tree(labels):
     mapping = [(-1, -1, -1, -1) for i in range(0)]
     found = [set([-1]) for i in range(len(labels))]

@@ -48,7 +48,7 @@ def label_prop_iteration(
     return result
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def label_outliers(indptr, indices, labels):
     n_rows = indptr.shape[0] - 1
 
@@ -78,7 +78,7 @@ def label_outliers(indptr, indices, labels):
     return labels
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def remap_labels(labels):
     mapping = {}
     unique_labels = np.unique(labels)

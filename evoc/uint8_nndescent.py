@@ -37,6 +37,7 @@ _POPCNT = np.asarray([np.uint8(i).bit_count() for i in range(256)], dtype=np.flo
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def fast_bit_jaccard(x, y):
     result = 0.0
@@ -199,6 +200,7 @@ def uint8_random_projection_split(data, indices, rng_state):
         numba.int64,
     ),
     nogil=True,
+    cache=False,
 )
 def make_uint8_tree(
     data,
@@ -247,6 +249,7 @@ def make_uint8_tree(
     nogil=True,
     locals={"n_leaves": numba.uint32, "i": numba.uint32},
     parallel=True,
+    cache=True,
 )
 def make_uint8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
@@ -286,6 +289,7 @@ def make_uint8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
         numba.int64,
     ),
     parallel=True,
+    cache=True,
 )
 def make_uint8_forest(data, rng_states, leaf_size, max_depth):
     result = [np.empty((1, 1), dtype=np.int32)] * rng_states.shape[0]
@@ -316,6 +320,7 @@ def make_uint8_forest(data, rng_states, leaf_size, max_depth):
         "idx": numba.uint32,
         "data_p": numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
     },
+    cache=True,
 )
 def generate_leaf_updates_uint8(
     updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
@@ -361,6 +366,7 @@ def generate_leaf_updates_uint8(
             (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
         ),
         numba.types.Array(numba.types.int32, 2, "C", readonly=True),
+        numba.types.int32,
     ),
     locals={
         "d": numba.float32,
@@ -371,13 +377,13 @@ def generate_leaf_updates_uint8(
         "n_updates_per_thread": numba.int32[::1],
     },
     parallel=True,
+    cache=True,
 )
-def init_rp_tree_uint8(data, current_graph, leaf_array):
+def init_rp_tree_uint8(data, current_graph, leaf_array, n_threads):
 
     n_leaves = leaf_array.shape[0]
     block_size = 64
     n_blocks = n_leaves // block_size
-    n_threads = numba.get_num_threads()
 
     max_leaf_size = leaf_array.shape[1]
     updates_per_thread = (
@@ -436,6 +442,7 @@ def init_rp_tree_uint8(data, current_graph, leaf_array):
     ),
     fastmath=True,
     locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32},
+    cache=True,
 )
 def init_random_uint8(n_neighbors, data, heap, rng_state):
     for i in range(data.shape[0]):
@@ -464,6 +471,7 @@ def init_random_uint8(n_neighbors, data, heap, rng_state):
         "data_p": numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
     },
     parallel=True,
+    cache=True,
 )
 def generate_graph_update_array_uint8(
     update_array,
@@ -546,8 +554,9 @@ def nn_descent_uint8(
     leaf_array=None,
     verbose=False,
 ):
+    n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_uint8(data, current_graph, leaf_array)
+    init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
     init_random_uint8(n_neighbors, data, current_graph, rng_state)
 
     n_vertices = data.shape[0]
