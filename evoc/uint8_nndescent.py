@@ -73,7 +73,7 @@ def fast_bit_jaccard(x, y):
     },
     fastmath=True,
     nogil=True,
-    cache=True,
+    cache=False,
 )
 def uint8_random_projection_split(data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create

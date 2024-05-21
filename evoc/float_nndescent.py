@@ -76,7 +76,7 @@ def fast_cosine(x, y):
     },
     fastmath=True,
     nogil=True,
-    cache=True,
+    cache=False,
     boundscheck=False,
 )
 def float_random_projection_split(data, indices, rng_state):

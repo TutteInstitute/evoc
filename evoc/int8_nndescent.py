@@ -63,7 +63,7 @@ def fast_int_inner_product_dissimilarity(x, y):
     },
     fastmath=True,
     nogil=True,
-    cache=True,
+    cache=False,
 )
 def int8_random_projection_split(data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
