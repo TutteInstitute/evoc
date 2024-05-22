@@ -65,7 +65,22 @@ def make_forest(
         )
         return np.empty((0, 0), dtype=np.int32)
 
-    return np.vstack(result)
+    # different trees can end up with different max leaf_sizes if the tree depth is insufficient
+    max_leaf_size = np.max([leaf_array.shape[1] for leaf_array in result])
+
+    # pad each leaf_array from each tree out to the max_leaf_size from any tree
+    # so that vstack can succeed. Check np.pad docs for the specific semantics
+    return np.vstack(
+        [
+            np.pad(
+                leaf_array,
+                ((0, 0), (0, max_leaf_size - leaf_array.shape[1])),
+                constant_values=-1,
+            )
+            for leaf_array in result
+        ]
+    )
+
 
 def nn_descent(
     data,
@@ -117,6 +132,7 @@ def nn_descent(
         neighbor_graph[1][:] = -np.log(-neighbor_graph[1])
 
     return neighbor_graph
+
 
 def knn_graph(
     data,
