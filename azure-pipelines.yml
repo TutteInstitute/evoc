@@ -17,6 +17,12 @@ pr:
     - doc/*
     - README.rst
 
+parameters:
+  - name: includeReleaseCandidates
+    displayName: "Allow pre-release dependencies"
+    type: boolean
+    default: false
+
 variables:
   triggeredByPullRequest: $[eq(variables['Build.Reason'], 'PullRequest')]
 
@@ -66,14 +72,24 @@ stages:
 
         - script: |
             python -m pip install --upgrade pip
+          displayName: 'Upgrade pip'
+
+        - script: |
+            pip install -e .
           displayName: 'Install dependencies'
+          condition: ${{ eq(parameters.includeReleaseCandidates, false) }}
+
+        - script: |
+            pip install --pre -e .
+          displayName: 'Install dependencies (allow pre-releases)'
+          condition: ${{ eq(parameters.includeReleaseCandidates, true) }}
 
         - script: |
             pip install -e .
             pip install pytest pytest-azurepipelines
             pip install pytest-cov
             pip install coveralls
-          displayName: 'Install package'
+          displayName: 'Install pytest'
 
         - script: |
             pytest evoc/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
