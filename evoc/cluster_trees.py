@@ -11,7 +11,9 @@ LinkageMergeData = namedtuple("LinkageMergeData", ["parent", "size", "next"])
 @numba.njit(cache=True)
 def create_linkage_merge_data(base_size):
     parent = np.full(2 * base_size - 1, -1, dtype=np.intp)
-    size = np.concatenate((np.ones(base_size, dtype=np.intp), np.zeros(base_size - 1, dtype=np.intp)))
+    size = np.concatenate(
+        (np.ones(base_size, dtype=np.intp), np.zeros(base_size - 1, dtype=np.intp))
+    )
     next_parent = np.array([base_size], dtype=np.intp)
 
     return LinkageMergeData(parent, size, next_parent)
@@ -36,7 +38,9 @@ def linkage_merge_find(linkage_merge, node):
 
 @numba.njit(cache=True)
 def linkage_merge_join(linkage_merge, left, right):
-    linkage_merge.size[linkage_merge.next[0]] = linkage_merge.size[left] + linkage_merge.size[right]
+    linkage_merge.size[linkage_merge.next[0]] = (
+        linkage_merge.size[left] + linkage_merge.size[right]
+    )
     linkage_merge.parent[left] = linkage_merge.next[0]
     linkage_merge.parent[right] = linkage_merge.next[0]
     linkage_merge.next[0] += 1
@@ -66,7 +70,9 @@ def mst_to_linkage_tree(sorted_mst):
             result[index][0] = right_component
 
         result[index][2] = delta
-        result[index][3] = linkage_merge.size[left_component] + linkage_merge.size[right_component]
+        result[index][3] = (
+            linkage_merge.size[left_component] + linkage_merge.size[right_component]
+        )
 
         linkage_merge_join(linkage_merge, left_component, right_component)
 
@@ -92,8 +98,19 @@ def bfs_from_hierarchy(hierarchy, bfs_root, num_points):
 
 
 @numba.njit(cache=True)
-def eliminate_branch(branch_node, parent_node, lambda_value, parents, children, lambdas, sizes, idx, ignore, hierarchy,
-                     num_points):
+def eliminate_branch(
+    branch_node,
+    parent_node,
+    lambda_value,
+    parents,
+    children,
+    lambdas,
+    sizes,
+    idx,
+    ignore,
+    hierarchy,
+    num_points,
+):
     if branch_node < num_points:
         parents[idx] = parent_node
         children[idx] = branch_node
@@ -112,7 +129,9 @@ def eliminate_branch(branch_node, parent_node, lambda_value, parents, children, 
     return idx
 
 
-CondensedTree = namedtuple('CondensedTree', ['parent', 'child', 'lambda_val', 'child_size'])
+CondensedTree = namedtuple(
+    "CondensedTree", ["parent", "child", "lambda_val", "child_size"]
+)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -148,8 +167,12 @@ def condense_tree(hierarchy, min_cluster_size=10):
         else:
             lambda_value = np.inf
 
-        left_count = np.int64(hierarchy[left - num_points, 3]) if left >= num_points else 1
-        right_count = np.int64(hierarchy[right - num_points, 3]) if right >= num_points else 1
+        left_count = (
+            np.int64(hierarchy[left - num_points, 3]) if left >= num_points else 1
+        )
+        right_count = (
+            np.int64(hierarchy[right - num_points, 3]) if right >= num_points else 1
+        )
 
         # The logic here is in a strange order, but it has non-trivial performance gains ...
         # The most common case by far is a singleton on the left; and cluster on the right take care of this separately
@@ -162,19 +185,63 @@ def condense_tree(hierarchy, min_cluster_size=10):
         # Next most common is a small left cluster and a large right cluster: relabel the right node; eliminate the left branch
         elif left_count < min_cluster_size and right_count >= min_cluster_size:
             relabel[right] = parent_node
-            idx = eliminate_branch(left, parent_node, lambda_value, parents, children, lambdas, sizes, idx, ignore,
-                                   hierarchy, num_points)
+            idx = eliminate_branch(
+                left,
+                parent_node,
+                lambda_value,
+                parents,
+                children,
+                lambdas,
+                sizes,
+                idx,
+                ignore,
+                hierarchy,
+                num_points,
+            )
         # Then we have a large left cluster and a small right cluster: relabel the left node; elimiate the right branch
         elif left_count >= min_cluster_size and right_count < min_cluster_size:
             relabel[left] = parent_node
-            idx = eliminate_branch(right, parent_node, lambda_value, parents, children, lambdas, sizes, idx, ignore,
-                                   hierarchy, num_points)
+            idx = eliminate_branch(
+                right,
+                parent_node,
+                lambda_value,
+                parents,
+                children,
+                lambdas,
+                sizes,
+                idx,
+                ignore,
+                hierarchy,
+                num_points,
+            )
         # If both clusters are small then eliminate all branches
         elif left_count < min_cluster_size and right_count < min_cluster_size:
-            idx = eliminate_branch(left, parent_node, lambda_value, parents, children, lambdas, sizes, idx, ignore,
-                                   hierarchy, num_points)
-            idx = eliminate_branch(right, parent_node, lambda_value, parents, children, lambdas, sizes, idx, ignore,
-                                   hierarchy, num_points)
+            idx = eliminate_branch(
+                left,
+                parent_node,
+                lambda_value,
+                parents,
+                children,
+                lambdas,
+                sizes,
+                idx,
+                ignore,
+                hierarchy,
+                num_points,
+            )
+            idx = eliminate_branch(
+                right,
+                parent_node,
+                lambda_value,
+                parents,
+                children,
+                lambdas,
+                sizes,
+                idx,
+                ignore,
+                hierarchy,
+                num_points,
+            )
         # and finally if we actually have a legitimate cluster split, handle that correctly
         else:
             relabel[left] = next_label
@@ -219,16 +286,22 @@ def score_condensed_tree_nodes(condensed_tree):
     for i in range(condensed_tree.parent.shape[0]):
         parent = condensed_tree.parent[i]
         if parent in result:
-            result[parent] += condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+            result[parent] += (
+                condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+            )
         else:
             result[parent] = condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
 
         if condensed_tree.child_size[i] > 1:
             child = condensed_tree.child[i]
             if child in result:
-                result[child] -= condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+                result[child] -= (
+                    condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+                )
             else:
-                result[child] = -condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+                result[child] = (
+                    -condensed_tree.lambda_val[i] * condensed_tree.child_size[i]
+                )
 
     return result
 
@@ -236,8 +309,12 @@ def score_condensed_tree_nodes(condensed_tree):
 @numba.njit(cache=True)
 def cluster_tree_from_condensed_tree(condensed_tree):
     mask = condensed_tree.child_size > 1
-    return CondensedTree(condensed_tree.parent[mask], condensed_tree.child[mask], condensed_tree.lambda_val[mask],
-                         condensed_tree.child_size[mask])
+    return CondensedTree(
+        condensed_tree.parent[mask],
+        condensed_tree.child[mask],
+        condensed_tree.lambda_val[mask],
+        condensed_tree.child_size[mask],
+    )
 
 
 @numba.njit(cache=True)
@@ -255,7 +332,9 @@ def eom_recursion(node, cluster_tree, node_scores, selected_clusters):
     child_score_total = 0.0
 
     for child_node in children:
-        child_score_total += eom_recursion(child_node, cluster_tree, node_scores, selected_clusters)
+        child_score_total += eom_recursion(
+            child_node, cluster_tree, node_scores, selected_clusters
+        )
 
     if child_score_total > current_score:
         return child_score_total
@@ -282,7 +361,9 @@ def extract_eom_clusters(condensed_tree, cluster_tree, allow_single_cluster=Fals
         for child_node in root_children:
             eom_recursion(child_node, cluster_tree, node_scores, selected_clusters)
 
-    return np.asarray([node for node, selected in selected_clusters.items() if selected])
+    return np.asarray(
+        [node for node, selected in selected_clusters.items() if selected]
+    )
 
 
 @numba.njit(cache=True)
@@ -326,19 +407,19 @@ def segments_in_branch(cluster_tree, segment):
 
     while len(to_process) > 0:
         result |= to_process
-        to_process = set(cluster_tree.child[
-            in_set_parallel(cluster_tree.parent, to_process)
-        ])
+        to_process = set(
+            cluster_tree.child[in_set_parallel(cluster_tree.parent, to_process)]
+        )
 
     return result
 
 
 @numba.njit(parallel=True, cache=True)
 def in_set_parallel(values, targets):
-  mask = np.empty(values.shape[0], dtype=numba.boolean)
-  for i in numba.prange(values.shape[0]):
-    mask[i] = values[i] in targets
-  return mask
+    mask = np.empty(values.shape[0], dtype=numba.boolean)
+    for i in numba.prange(values.shape[0]):
+        mask[i] = values[i] in targets
+    return mask
 
 
 @numba.njit(parallel=True, cache=True)
@@ -378,17 +459,53 @@ def get_cluster_labelling_at_cut(linkage_tree, cut, min_cluster_size):
 
     return result
 
+
+@numba.njit(cache=True)
+def get_single_cluster_label_vector(
+    tree,
+    cluster,
+    cluster_selection_epsilon,
+    n_samples,
+):
+    if len(tree.parent) == 0:
+        return np.full(n_samples, -1, dtype=np.intp)
+
+    result = np.full(n_samples, -1, dtype=np.intp)
+    max_lambda = tree.lambda_val[tree.parent == cluster].max()
+
+    for i in range(tree.child.shape[0]):
+        n = tree.child[i]
+        cur_lambda = tree.lambda_val[i]
+        if cluster_selection_epsilon > 0.0:
+            if cur_lambda >= 1 / cluster_selection_epsilon:
+                result[n] = 0
+            else:
+                result[n] = -1
+        elif cur_lambda >= max_lambda:
+            result[n] = 0
+
+    return result
+
+
 @numba.njit(cache=True)
 def get_cluster_label_vector(
-        tree,
-        clusters,
-        cluster_selection_epsilon=0.0
+    tree,
+    clusters,
+    cluster_selection_epsilon,
+    n_samples,
 ):
+    if len(clusters) == 1:
+        return get_single_cluster_label_vector(
+            tree, clusters[0], cluster_selection_epsilon, n_samples
+        )
+
+    if len(tree.parent) == 0:
+        return np.full(n_samples, -1, dtype=np.intp)
     root_cluster = tree.parent.min()
-    result = np.empty(root_cluster, dtype=np.intp)
+    result = np.full(n_samples, -1, dtype=np.intp)
     cluster_label_map = {c: n for n, c in enumerate(np.sort(clusters))}
 
-    disjoint_set = ds_rank_create(tree.parent.max() + 1)
+    disjoint_set = ds_rank_create(max(tree.parent.max() + 1, tree.child.max() + 1))
     clusters = set(clusters)
 
     for n in range(tree.parent.shape[0]):
@@ -397,25 +514,10 @@ def get_cluster_label_vector(
         if child not in clusters:
             ds_union_by_rank(disjoint_set, parent, child)
 
-    for n in range(root_cluster):
+    for n in range(n_samples):
         cluster = ds_find(disjoint_set, n)
-        if cluster < root_cluster:
+        if cluster <= root_cluster:
             result[n] = -1
-        elif cluster == root_cluster:
-            if len(clusters) == 1:
-                max_lambda = tree.lambda_val[tree.parent == cluster].max()
-                cur_lambda = tree.lambda_val[tree.child == n]
-                if cluster_selection_epsilon > 0.0:
-                    if cur_lambda >= 1 / cluster_selection_epsilon:
-                        result[n] = cluster_label_map[cluster]
-                    else:
-                        result[n] = -1
-                elif cur_lambda >= max_lambda:
-                    result[n] = cluster_label_map[cluster]
-                else:
-                    result[n] = -1
-            else:
-                result[n] = -1
         else:
             result[n] = cluster_label_map[cluster]
 
