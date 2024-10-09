@@ -12,6 +12,8 @@ from .common_nndescent import (
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
+INF = np.finfo(np.float32).max
+EXP_NEG_INF = np.finfo(np.float32).tiny
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
@@ -52,7 +54,10 @@ def fast_cosine(x, y):
     for i in range(dim):
         result += x[i] * y[i]
 
-    return -result
+    if result > 0.0:
+        return -result
+    else:
+        return -EXP_NEG_INF
 
 
 @numba.njit(
