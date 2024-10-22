@@ -150,7 +150,7 @@ def condense_tree(hierarchy, min_cluster_size=10):
     lambdas = np.empty(root, dtype=np.float32)
     sizes = np.ones(root, dtype=np.int64)
 
-    ignore = np.zeros(root + 1, dtype=np.bool8)
+    ignore = np.zeros(root + 1, dtype=np.bool)
 
     idx = 0
 

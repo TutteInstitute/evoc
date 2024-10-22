@@ -54,7 +54,7 @@ def tau_rand(state):
 @numba.njit(cache=True)
 def make_heap(n_points, size):
     indices = np.full((int(n_points), int(size)), -1, dtype=np.int32)
-    distances = np.full((int(n_points), int(size)), np.infty, dtype=np.float32)
+    distances = np.full((int(n_points), int(size)), np.inf, dtype=np.float32)
     flags = np.zeros((int(n_points), int(size)), dtype=np.uint8)
     result = (indices, distances, flags)
 
