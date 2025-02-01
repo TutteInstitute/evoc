@@ -261,7 +261,7 @@ def make_float_tree(
         numba.uint64,
     ),
     nogil=True,
-    locals={"n_leaves": numba.uint32},
+    locals={"n_leaves": numba.uint32, "i":numba.uint64},
     parallel=False,
     cache=True,
 )
@@ -291,8 +291,8 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     # for i in numba.prange(n_leaves):
     for i in range(n_leaves):
         points = point_indices[i]
-        leaf_size = numba.uint32(len(points))
-        result[i, :leaf_size] = points
+        current_leaf_size = numba.uint32(len(points))
+        result[i, :current_leaf_size] = points
 
     return result
 
