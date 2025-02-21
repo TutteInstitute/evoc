@@ -21,12 +21,88 @@ from .node_embedding import node_embedding
 from .graph_construction import neighbor_graph_matrix
 
 
+@numba.njit(cache=True)
+def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples):
+    lower_bound_min_cluster_size = 2
+    upper_bound_min_cluster_size = n_samples // 2
+    mid_min_cluster_size = int(
+        round((lower_bound_min_cluster_size + upper_bound_min_cluster_size) / 2.0)
+    )
+    min_n_clusters = 0
+
+    upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
+    leaves = extract_leaves(upper_tree)
+    upper_n_clusters = len(leaves)
+
+    lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
+    leaves = extract_leaves(lower_tree)
+    lower_n_clusters = len(leaves)
+
+    while upper_bound_min_cluster_size - lower_bound_min_cluster_size > 1:
+        mid_min_cluster_size = int(
+            round((lower_bound_min_cluster_size + upper_bound_min_cluster_size) / 2.0)
+        )
+        if (
+            mid_min_cluster_size == lower_bound_min_cluster_size
+            or mid_min_cluster_size == upper_bound_min_cluster_size
+        ):
+            break
+        mid_tree = condense_tree(uncondensed_tree, mid_min_cluster_size)
+        leaves = extract_leaves(mid_tree)
+        mid_n_clusters = len(leaves)
+
+        if mid_n_clusters < approx_n_clusters:
+            upper_bound_min_cluster_size = mid_min_cluster_size
+            upper_n_clusters = mid_n_clusters
+        elif mid_n_clusters >= approx_n_clusters:
+            lower_bound_min_cluster_size = mid_min_cluster_size
+            lower_n_clusters = mid_n_clusters
+
+    if abs(lower_n_clusters - approx_n_clusters) < abs(
+        upper_n_clusters - approx_n_clusters
+    ):
+        lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
+        leaves = extract_leaves(lower_tree)
+        clusters = get_cluster_label_vector(lower_tree, leaves, 0.0, n_samples)
+        strengths = get_point_membership_strength_vector(lower_tree, leaves, clusters)
+        return leaves, clusters, strengths
+    elif abs(lower_n_clusters - approx_n_clusters) > abs(
+        upper_n_clusters - approx_n_clusters
+    ):
+        upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
+        leaves = extract_leaves(upper_tree)
+        clusters = get_cluster_label_vector(upper_tree, leaves, 0.0, n_samples)
+        strengths = get_point_membership_strength_vector(upper_tree, leaves, clusters)
+        return leaves, clusters, strengths
+    else:
+        lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
+        lower_leaves = extract_leaves(lower_tree)
+        lower_clusters = get_cluster_label_vector(lower_tree, lower_leaves)
+        upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
+        upper_leaves = extract_leaves(upper_tree)
+        upper_clusters = get_cluster_label_vector(
+            upper_tree, upper_leaves, 0.0, n_samples
+        )
+
+        if np.sum(lower_clusters >= 0) > np.sum(upper_clusters >= 0):
+            strengths = get_point_membership_strength_vector(
+                lower_tree, lower_leaves, lower_clusters
+            )
+            return lower_leaves, lower_clusters, strengths
+        else:
+            strengths = get_point_membership_strength_vector(
+                upper_tree, upper_leaves, upper_clusters
+            )
+            return upper_leaves, upper_clusters, strengths
+
+
 def build_cluster_layers(
     data,
     *,
     min_clusters=3,
     min_samples=5,
     base_min_cluster_size=10,
+    base_n_clusters=None,
     next_cluster_size_quantile=0.8,
 ):
     n_samples = data.shape[0]
@@ -42,10 +118,18 @@ def build_cluster_layers(
     )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
-    new_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
-    leaves = extract_leaves(new_tree)
-    clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
-    strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
+    if base_n_clusters is not None:
+        leaves, clusters, strengths = _binary_search_for_n_clusters(
+            uncondensed_tree, base_n_clusters, n_samples=n_samples
+        )
+        cluster_sizes = np.bincount(clusters[clusters >= 0])
+        min_cluster_size = np.min(cluster_sizes)
+    else:
+        new_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
+        leaves = extract_leaves(new_tree)
+        clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
+        strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
+
     n_clusters_in_layer = clusters.max() + 1
 
     while n_clusters_in_layer >= min_clusters:
@@ -126,79 +210,6 @@ def build_cluster_tree(labels):
     return result
 
 
-@numba.njit(cache=True)
-def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples):
-    lower_bound_min_cluster_size = 2
-    upper_bound_min_cluster_size = n_samples // 2
-    mid_min_cluster_size = int(
-        round((lower_bound_min_cluster_size + upper_bound_min_cluster_size) / 2.0)
-    )
-    min_n_clusters = 0
-
-    upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
-    leaves = extract_leaves(upper_tree)
-    upper_n_clusters = len(leaves)
-
-    lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
-    leaves = extract_leaves(lower_tree)
-    lower_n_clusters = len(leaves)
-
-    while upper_bound_min_cluster_size - lower_bound_min_cluster_size > 1:
-        mid_min_cluster_size = int(
-            round((lower_bound_min_cluster_size + upper_bound_min_cluster_size) / 2.0)
-        )
-        if (
-            mid_min_cluster_size == lower_bound_min_cluster_size
-            or mid_min_cluster_size == upper_bound_min_cluster_size
-        ):
-            break
-        mid_tree = condense_tree(uncondensed_tree, mid_min_cluster_size)
-        leaves = extract_leaves(mid_tree)
-        mid_n_clusters = len(leaves)
-
-        if mid_n_clusters < approx_n_clusters:
-            upper_bound_min_cluster_size = mid_min_cluster_size
-            upper_n_clusters = mid_n_clusters
-        elif mid_n_clusters >= approx_n_clusters:
-            lower_bound_min_cluster_size = mid_min_cluster_size
-            lower_n_clusters = mid_n_clusters
-
-    if abs(lower_n_clusters - approx_n_clusters) < abs(
-        upper_n_clusters - approx_n_clusters
-    ):
-        lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
-        leaves = extract_leaves(lower_tree)
-        clusters = get_cluster_label_vector(lower_tree, leaves, 0.0, n_samples)
-        strengths = get_point_membership_strength_vector(lower_tree, leaves, clusters)
-        return clusters, strengths
-    elif abs(lower_n_clusters - approx_n_clusters) > abs(
-        upper_n_clusters - approx_n_clusters
-    ):
-        upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
-        leaves = extract_leaves(upper_tree)
-        clusters = get_cluster_label_vector(upper_tree, leaves, 0.0, n_samples)
-        strengths = get_point_membership_strength_vector(upper_tree, leaves, clusters)
-        return clusters, strengths
-    else:
-        lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
-        lower_leaves = extract_leaves(lower_tree)
-        lower_clusters = get_cluster_label_vector(lower_tree, lower_leaves)
-        upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
-        upper_leaves = extract_leaves(upper_tree)
-        upper_clusters = get_cluster_label_vector(upper_tree, upper_leaves, 0.0, n_samples)
-
-        if np.sum(lower_clusters >= 0) > np.sum(upper_clusters >= 0):
-            strengths = get_point_membership_strength_vector(
-                lower_tree, lower_leaves, lower_clusters
-            )
-            return lower_clusters, strengths
-        else:
-            strengths = get_point_membership_strength_vector(
-                upper_tree, upper_leaves, upper_clusters
-            )
-            return upper_clusters, strengths
-
-
 def binary_search_for_n_clusters(
     data,
     approx_n_clusters,
@@ -213,7 +224,10 @@ def binary_search_for_n_clusters(
 
     n_samples = data.shape[0]
 
-    return _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples)
+    leaves, clusters, strengths = _binary_search_for_n_clusters(
+        uncondensed_tree, approx_n_clusters, n_samples
+    )
+    return clusters, strengths
 
 
 def evoc_clusters(
