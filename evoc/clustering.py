@@ -77,7 +77,9 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
     else:
         lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
         lower_leaves = extract_leaves(lower_tree)
-        lower_clusters = get_cluster_label_vector(lower_tree, lower_leaves)
+        lower_clusters = get_cluster_label_vector(
+            lower_tree, lower_leaves, 0.0, n_samples
+        )
         upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
         upper_leaves = extract_leaves(upper_tree)
         upper_clusters = get_cluster_label_vector(
