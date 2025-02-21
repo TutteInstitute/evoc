@@ -234,6 +234,7 @@ def evoc_clusters(
     data,
     noise_level=0.5,
     base_min_cluster_size=5,
+    base_n_clusters=None,
     min_num_clusters=4,
     approx_n_clusters=None,
     n_neighbors=15,
@@ -267,6 +268,13 @@ def evoc_clusters(
         The minimum number of points in a cluster at the base layer of the clustering.
         This gives the finest granularity clustering that will be returned, with less
         graularity at higher layers.
+
+    base_n_clusters : int, default=None
+        If not None, the algorithm will attempt to find the granularity of
+        clustering that will give exactly this many clusters for the bottom-most layer
+        of clustering. Since the actual number of clusters cannot be guaranteed this
+        is only approximate, but usually the algorithm can manage to get this exact number,
+        assuming a resonable clustering into ``base_n_clusters`` exists.
 
     min_num_clusters : int, default=4
         The minimum number of clusters in the least granular layer of the clustering.
@@ -378,6 +386,7 @@ def evoc_clusters(
             min_clusters=min_num_clusters,
             min_samples=min_samples,
             base_min_cluster_size=base_min_cluster_size,
+            base_n_clusters=base_n_clusters,
             next_cluster_size_quantile=next_cluster_size_quantile,
         )
         if return_duplicates:
