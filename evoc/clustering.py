@@ -394,6 +394,13 @@ class EVoC(BaseEstimator, ClusterMixin):
         This gives the finest granularity clustering that will be returned, with less
         graularity at higher layers.
 
+    base_n_clusters : int or None, default=None
+        If not None, the algorithm will attempt to find the granularity of
+        clustering that will give exactly this many clusters for the bottom-most layer
+        of clustering. Since the actual number of clusters cannot be guaranteed this
+        is only approximate, but usually the algorithm can manage to get this exact
+        number, assuming a resonable clustering into ``base_n_clusters`` exists.
+
     min_num_clusters : int, default=4
         The minimum number of clusters in the least granular layer of the clustering.
         Once a layer produces this many clusters or less no further layers will be
@@ -472,22 +479,24 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     def __init__(
         self,
-        noise_level=0.5,
-        base_min_cluster_size=5,
-        min_num_clusters=4,
-        approx_n_clusters=None,
-        n_neighbors=15,
-        min_samples=5,
-        next_cluster_size_quantile=0.8,
-        n_epochs=50,
-        node_embedding_init="label_prop",
-        symmetrize_graph=True,
-        node_embedding_dim=None,
-        neighbor_scale=1.0,
-    ):
+        noise_level: float = 0.5,
+        base_min_cluster_size: int = 5,
+        base_n_clusters: int | None = None,
+        min_num_clusters: int = 4,
+        approx_n_clusters: int | None = None,
+        n_neighbors: int = 15,
+        min_samples: int = 5,
+        next_cluster_size_quantile: float = 0.8,
+        n_epochs: int = 50,
+        node_embedding_init: str | None = "label_prop",
+        symmetrize_graph: bool = True,
+        node_embedding_dim: int | None = None,
+        neighbor_scale: float = 1.0,
+    ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
         self.base_min_cluster_size = base_min_cluster_size
+        self.base_n_clusters = base_n_clusters
         self.min_num_clusters = min_num_clusters
         self.approx_n_clusters = approx_n_clusters
         self.next_cluster_size_quantile = next_cluster_size_quantile
@@ -533,6 +542,7 @@ class EVoC(BaseEstimator, ClusterMixin):
                 n_neighbors=self.n_neighbors,
                 noise_level=self.noise_level,
                 base_min_cluster_size=self.base_min_cluster_size,
+                base_n_clusters=self.base_n_clusters,
                 min_num_clusters=self.min_num_clusters,
                 approx_n_clusters=self.approx_n_clusters,
                 next_cluster_size_quantile=self.next_cluster_size_quantile,
