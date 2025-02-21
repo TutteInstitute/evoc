@@ -244,7 +244,7 @@ def make_int8_tree(
     nogil=True,
     locals={"n_leaves": numba.uint32, "i": numba.uint32},
     parallel=True,
-    cache=True,
+    cache=False,
 )
 def make_int8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
@@ -284,7 +284,7 @@ def make_int8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
         numba.int64,
     ),
     parallel=True,
-    cache=True,
+    cache=False,
 )
 def make_int8_forest(data, rng_states, leaf_size, max_depth):
     result = [np.empty((1, 1), dtype=np.int32)] * rng_states.shape[0]

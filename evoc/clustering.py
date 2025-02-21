@@ -29,6 +29,7 @@ def build_cluster_layers(
     base_min_cluster_size=10,
     next_cluster_size_quantile=0.8,
 ):
+    n_samples = data.shape[0]
     cluster_layers = []
     membership_strength_layers = []
 
@@ -43,7 +44,7 @@ def build_cluster_layers(
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
     new_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
     leaves = extract_leaves(new_tree)
-    clusters = get_cluster_label_vector(new_tree, leaves)
+    clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
     strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
     n_clusters_in_layer = clusters.max() + 1
 
@@ -60,7 +61,7 @@ def build_cluster_layers(
             min_cluster_size = next_min_cluster_size
         new_tree = condense_tree(uncondensed_tree, min_cluster_size)
         leaves = extract_leaves(new_tree)
-        clusters = get_cluster_label_vector(new_tree, leaves)
+        clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
         strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
         n_clusters_in_layer = clusters.max() + 1
 
@@ -167,7 +168,7 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
     ):
         lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
         leaves = extract_leaves(lower_tree)
-        clusters = get_cluster_label_vector(lower_tree, leaves)
+        clusters = get_cluster_label_vector(lower_tree, leaves, 0.0, n_samples)
         strengths = get_point_membership_strength_vector(lower_tree, leaves, clusters)
         return clusters, strengths
     elif abs(lower_n_clusters - approx_n_clusters) > abs(
@@ -175,7 +176,7 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
     ):
         upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
         leaves = extract_leaves(upper_tree)
-        clusters = get_cluster_label_vector(upper_tree, leaves)
+        clusters = get_cluster_label_vector(upper_tree, leaves, 0.0, n_samples)
         strengths = get_point_membership_strength_vector(upper_tree, leaves, clusters)
         return clusters, strengths
     else:
@@ -184,7 +185,7 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
         lower_clusters = get_cluster_label_vector(lower_tree, lower_leaves)
         upper_tree = condense_tree(uncondensed_tree, upper_bound_min_cluster_size)
         upper_leaves = extract_leaves(upper_tree)
-        upper_clusters = get_cluster_label_vector(upper_tree, upper_leaves)
+        upper_clusters = get_cluster_label_vector(upper_tree, upper_leaves, 0.0, n_samples)
 
         if np.sum(lower_clusters >= 0) > np.sum(upper_clusters >= 0):
             strengths = get_point_membership_strength_vector(

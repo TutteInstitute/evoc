@@ -105,7 +105,7 @@ def nn_descent(
             leaf_array=leaf_array,
             verbose=verbose,
         )
-        neighbor_graph[1][:] = -np.log(-neighbor_graph[1])
+        neighbor_graph[1][:] = -np.log2(-neighbor_graph[1])
     elif input_dtype == np.int8:
         neighbor_graph = nn_descent_int8(
             data,
@@ -129,7 +129,7 @@ def nn_descent(
             leaf_array=leaf_array,
             verbose=verbose,
         )
-        neighbor_graph[1][:] = -np.log(-neighbor_graph[1])
+        neighbor_graph[1][:] = np.maximum(-np.log2(-neighbor_graph[1]), 0.0)
 
     return neighbor_graph
 
@@ -159,6 +159,7 @@ def knn_graph(
         data = check_array(data, dtype=np.float32, order="C", copy=True)
         norms = np.einsum("ij,ij->i", data, data)
         np.sqrt(norms, norms)
+        norms[norms == 0.0] = 1.0
         data /= norms[:, np.newaxis]
         _input_dtype = np.float32
         _bit_trees = False

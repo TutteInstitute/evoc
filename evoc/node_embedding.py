@@ -8,9 +8,9 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def make_epochs_per_sample(weights, n_epochs):
-    result = -1.0 * np.ones(weights.shape[0], dtype=np.float32)
-    n_samples = n_epochs * (weights / weights.max())
-    result[n_samples > 0] = float(n_epochs) / np.float32(n_samples[n_samples > 0])
+    result = np.full(weights.shape[0], n_epochs, dtype=np.float32)
+    n_samples = np.maximum(n_epochs * (weights / weights.max()), 1.0)
+    result = float(n_epochs) / np.float32(n_samples)
     return result
 
 
