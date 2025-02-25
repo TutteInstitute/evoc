@@ -257,7 +257,9 @@ def make_float_tree(
 
     return
 
-
+from numba.core.errors import NumbaTypeSafetyWarning
+from warnings import simplefilter
+simplefilter('ignore', category=NumbaTypeSafetyWarning)
 @numba.njit(
     numba.int32[:, ::1](
         numba.types.Array(numba.types.float32, 2, "C", readonly=True),
@@ -293,14 +295,13 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
         max_leaf_size = max(max_leaf_size, numba.uint64(len(points)))
 
     result = np.full((n_leaves, max_leaf_size), -1, dtype=np.int32)
-    # for i in numba.prange(n_leaves):
-    for i in range(n_leaves):
+    for i in numba.prange(n_leaves):
         points = point_indices[i]
-        current_leaf_size = numba.uint32(len(points))
-        result[i, :current_leaf_size] = points
+        leaf_size = numba.int32(len(points))
+        result[i, :leaf_size] = points
 
     return result
-
+simplefilter('default', category=NumbaTypeSafetyWarning)
 
 @numba.njit(
     numba.types.List(numba.int32[:, ::1])(
