@@ -192,7 +192,7 @@ def knn_graph(
     )
 
     if max_candidates is None:
-        effective_max_candidates = min(60, n_neighbors)
+        effective_max_candidates = min(60, int(n_neighbors * 1.5))
     else:
         effective_max_candidates = max_candidates
 

@@ -4,7 +4,10 @@ import numba
 from scipy.sparse import csr_matrix
 
 from .node_embedding import node_embedding
+from .common_nndescent import tau_rand
 
+INT32_MIN = np.iinfo(np.int32).min + 1
+INT32_MAX = np.iinfo(np.int32).max - 1
 
 @numba.njit(fastmath=True, parallel=True, cache=True)
 def label_prop_iteration(
@@ -12,11 +15,13 @@ def label_prop_iteration(
     indices,
     data,
     labels,
+    rng_state,
 ):
     n_rows = indptr.shape[0] - 1
     result = labels.copy()
 
     for i in numba.prange(n_rows):
+        local_rng_state = rng_state + i
         votes = {}
         for k in range(indptr[i], indptr[i + 1]):
             j = indices[k]
@@ -40,7 +45,7 @@ def label_prop_iteration(
                 tie_count += 1
                 if current_l == -1:
                     result[i] = l
-                elif np.random.rand() < 1.0 / tie_count:
+                elif tau_rand(local_rng_state) < 1.0 / tie_count:
                     result[i] = l
             else:
                 continue
@@ -97,12 +102,13 @@ def remap_labels(labels):
     return labels
 
 
-def label_prop_loop(indptr, indices, data, labels, n_iter=20, approx_n_parts=2048):
+def label_prop_loop(indptr, indices, data, labels, random_state, n_iter=20, approx_n_parts=2048):
+    rng_state = random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
     for i in range(int(1.25 * approx_n_parts)):
-        labels[np.random.randint(labels.shape[0])] = i
+        labels[random_state.randint(labels.shape[0])] = i
 
     for i in range(n_iter):
-        new_labels = label_prop_iteration(indptr, indices, data, labels)
+        new_labels = label_prop_iteration(indptr, indices, data, labels, rng_state)
         labels = new_labels
 
     labels = label_outliers(indptr, indices, labels)
@@ -117,10 +123,14 @@ def label_propagation_init(
     scaling=0.1,
     random_scale=1.0,
     noise_level=0.5,
+    random_state=None,
 ):
+    if random_state is None:
+        random_state = np.random.RandomState()
+
     labels = np.full(graph.shape[0], -1, dtype=np.int64)
     partition = label_prop_loop(
-        graph.indptr, graph.indices, graph.data, labels, n_iter, approx_n_parts
+        graph.indptr, graph.indices, graph.data, labels, random_state, n_iter, approx_n_parts
     )
     reduction_map = csr_matrix(
         (np.ones(partition.shape[0]), partition, np.arange(partition.shape[0] + 1)),
@@ -129,10 +139,10 @@ def label_propagation_init(
     reduced_graph = (reduction_map.T * graph * reduction_map).tocoo()
     reduced_graph.data = np.clip(reduced_graph.data, 0.0, 1.0)
     reduced_layout = node_embedding(
-        reduced_graph, n_components, 50, verbose=False, noise_level=noise_level
+        reduced_graph, n_components, 50, verbose=False, noise_level=noise_level, random_state=random_state
     )
     result = reduced_layout[partition]
-    result += np.random.normal(
+    result += random_state.normal(
         scale=random_scale, size=(partition.shape[0], reduced_layout.shape[1])
     )
     result = (scaling * (result - result.mean(axis=0))).astype(np.float32)
