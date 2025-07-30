@@ -73,15 +73,21 @@ def fast_cosine(x, y):
         "right_data": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         "test_data": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         "hyperplane_vector": numba.float32[::1],
+        "hyperplane_norm": numba.float32,
         "margin": numba.float32,
         "d": numba.uint32,
-        "i": numba.uint32,
         "left_index": numba.uint32,
         "right_index": numba.uint32,
+        "point_idx": numba.int32,
+        "classification": numba.int8,
+        "max_size": numba.uint32,
+        "temp_left": numba.int32[::1],
+        "temp_right": numba.int32[::1],
+        "indices_size": numba.int32,
     },
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
     boundscheck=False,
 )
 def float_random_projection_split(data, indices, rng_state):
@@ -112,10 +118,11 @@ def float_random_projection_split(data, indices, rng_state):
     dim = data.shape[1]
 
     # Select two random points, set the hyperplane between them
-    left_index = tau_rand_int(rng_state) % indices.shape[0]
-    right_index = tau_rand_int(rng_state) % indices.shape[0]
+    indices_size = np.int32(indices.shape[0])
+    left_index = tau_rand_int(rng_state) % indices_size
+    right_index = tau_rand_int(rng_state) % indices_size
     right_index += left_index == right_index
-    right_index = right_index % indices.shape[0]
+    right_index = right_index % indices_size
     left = indices[left_index]
     right = indices[right_index]
     left_data = data[left]
@@ -129,67 +136,69 @@ def float_random_projection_split(data, indices, rng_state):
     for d in range(dim):
         hyperplane_vector[d] = left_data[d] - right_data[d]
         hyperplane_norm += hyperplane_vector[d] * hyperplane_vector[d]
+    
     hyperplane_norm = np.sqrt(hyperplane_norm)
-
-    # hyperplane_norm = norm(hyperplane_vector)
     if abs(hyperplane_norm) < EPS:
         hyperplane_norm = 1.0
 
+    # Normalize in the same vector (avoiding second loop when possible)
     for d in range(dim):
         hyperplane_vector[d] /= hyperplane_norm
 
-    # For each point compute the margin (project into normal vector)
-    # If we are on lower side of the hyperplane put in one pile, otherwise
-    # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
+    # Use temporary arrays sized for worst case, then trim
+    max_size = np.uint32(indices.shape[0])
+    temp_left = np.empty(max_size, dtype=np.int32)
+    temp_right = np.empty(max_size, dtype=np.int32)
     n_left = 0
     n_right = 0
-    side = np.empty(indices.shape[0], np.bool_)
-    for i in range(indices.shape[0]):
-        local_rng_state = rng_state + i
+
+    # Single pass: classify points and directly populate result arrays
+    for idx in range(indices.shape[0]):
+        local_rng_state = rng_state + idx
+        point_idx = indices[idx]
+        test_data = data[point_idx]
         margin = 0.0
-        test_data = data[indices[i]]
+        
+        # Compute margin (dot product with hyperplane normal)
         for d in range(dim):
             margin += hyperplane_vector[d] * test_data[d]
 
+        # Classify point and directly assign to appropriate array
         if abs(margin) < EPS:
-            side[i] = np.bool_(tau_rand_int(local_rng_state) % 2)
-            if side[i] == 0:
-                n_left += 1
-            else:
-                n_right += 1
-        elif margin > 0:
-            side[i] = 0
+            classification = tau_rand_int(local_rng_state) % 2
+        else:
+            classification = 0 if margin > 0 else 1
+
+        if classification == 0:
+            temp_left[n_left] = point_idx
             n_left += 1
         else:
-            side[i] = 1
+            temp_right[n_right] = point_idx
             n_right += 1
 
-    # If all points end up on one side, something went wrong numerically
-    # In this case, assign points randomly; they are likely very close anyway
+    # Handle degenerate case where all points end up on one side
     if n_left == 0 or n_right == 0:
         n_left = 0
         n_right = 0
-        for i in range(indices.shape[0]):
-            side[i] = np.bool_(tau_rand_int(rng_state) % 2)
-            if side[i] == 0:
+        # Reassign randomly
+        for idx in range(indices.shape[0]):
+            point_idx = indices[idx]
+            classification = tau_rand_int(rng_state) % 2
+            if classification == 0:
+                temp_left[n_left] = point_idx
                 n_left += 1
             else:
+                temp_right[n_right] = point_idx
                 n_right += 1
 
-    # Now that we have the counts allocate arrays
+    # Create final arrays with exact sizes (copy only what we need)
     indices_left = np.empty(n_left, dtype=np.int32)
     indices_right = np.empty(n_right, dtype=np.int32)
-
-    # Populate the arrays with graph_indices according to which side they fell on
-    n_left = 0
-    n_right = 0
-    for i in range(side.shape[0]):
-        if side[i] == 0:
-            indices_left[n_left] = indices[i]
-            n_left += 1
-        else:
-            indices_right[n_right] = indices[i]
-            n_right += 1
+    
+    for i in range(n_left):
+        indices_left[i] = temp_left[i]
+    for j in range(n_right):
+        indices_right[j] = temp_right[j]
 
     return indices_left, indices_right
 
