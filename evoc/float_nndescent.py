@@ -341,6 +341,7 @@ def make_float_forest(data, rng_states, leaf_size, max_depth):
         "n": numba.uint32,
         "idx": numba.uint32,
         "data_p": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        "max_threshold": numba.float32,
     },
     cache=True,
 )
@@ -362,14 +363,20 @@ def generate_leaf_updates_float(
                 if p < 0:
                     break
                 data_p = data[p]
+                updates[t, idx, 0] = p
+                updates[t, idx, 1] = p
+                updates[t, idx, 2] = -1.0
+                idx += 1
 
-                for j in range(i, leaf_block.shape[1]):
+                for j in range(i + 1, leaf_block.shape[1]):  # Start from i+1 to skip self-comparison
                     q = leaf_block[n, j]
                     if q < 0:
                         break
 
                     d = fast_cosine(data_p, data[q])
-                    if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                    # Use max for better branch prediction than OR condition
+                    max_threshold = max(dist_thresholds[p], dist_thresholds[q])
+                    if d < max_threshold:
                         updates[t, idx, 0] = p
                         updates[t, idx, 1] = q
                         updates[t, idx, 2] = d
@@ -496,6 +503,7 @@ def init_random_float(n_neighbors, data, heap, rng_state):
         "d": numba.float32,
         "max_updates": numba.int32,
         "threshold_check": numba.boolean,
+        "max_threshold": numba.float32,
     },
     parallel=True,
     cache=True,
@@ -550,9 +558,10 @@ def generate_graph_update_array_float_basic(
                     # Compute distance once
                     d = fast_cosine(data_p, data[q])
                     
-                    # Cache threshold and do single comparison check
+                    # Use max for better branch prediction than OR condition
                     dist_thresh_q = dist_thresholds[q]
-                    threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+                    threshold_check = d <= max_threshold
                     
                     if threshold_check:
                         update_array[t, idx, 0] = p
@@ -570,7 +579,8 @@ def generate_graph_update_array_float_basic(
 
                     d = fast_cosine(data_p, data[q])
                     dist_thresh_q = dist_thresholds[q]
-                    threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+                    threshold_check = d <= max_threshold
                     
                     if threshold_check:
                         update_array[t, idx, 0] = p
@@ -607,6 +617,7 @@ generate_graph_update_array_float_original = generate_graph_update_array_float_b
         "working_set_size": numba.int32,
         "batch_start": numba.int32,
         "batch_end": numba.int32,
+        "max_threshold": numba.float32,
     },
     parallel=True,
     cache=True,
@@ -673,7 +684,8 @@ def generate_graph_update_array_float(
 
                         d = fast_cosine(data_p, data[q])
                         dist_thresh_q = dist_thresholds[q]
-                        threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                        max_threshold = max(dist_thresh_p, dist_thresh_q)
+                        threshold_check = d <= max_threshold
                         
                         if threshold_check:
                             update_array[t, idx, 0] = p
@@ -692,7 +704,8 @@ def generate_graph_update_array_float(
 
                         d = fast_cosine(data_p, data[q])
                         dist_thresh_q = dist_thresholds[q]
-                        threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                        max_threshold = max(dist_thresh_p, dist_thresh_q)
+                        threshold_check = d <= max_threshold
                         
                         if threshold_check:
                             update_array[t, idx, 0] = p
@@ -715,7 +728,8 @@ def generate_graph_update_array_float(
 
                             d = fast_cosine(data_p, data[q])
                             dist_thresh_q = dist_thresholds[q]
-                            threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                            max_threshold = max(dist_thresh_p, dist_thresh_q)
+                            threshold_check = d <= max_threshold
                             
                             if threshold_check:
                                 update_array[t, idx, 0] = p
