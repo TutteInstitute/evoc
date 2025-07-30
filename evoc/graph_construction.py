@@ -1,7 +1,7 @@
 import numpy as np
 import numba
 
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_array
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -138,7 +138,7 @@ def neighbor_graph_matrix(
         knn_indices, knn_dists, sigmas, rhos
     )
 
-    result = coo_matrix(
+    result = coo_array(
         (vals, (rows, cols)), shape=(knn_indices.shape[0], knn_indices.shape[0]), dtype=np.float32,
     )
     result.eliminate_zeros()
