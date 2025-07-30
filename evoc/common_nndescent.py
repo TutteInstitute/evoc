@@ -85,7 +85,7 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.njit(parallel=True, cache=False)
+@numba.njit(parallel=True, cache=True)
 def deheap_sort(indices, distances):
     """Given two arrays representing a heap (indices and distances), reorder the
      arrays by increasing distance. This is effectively just the second half of
@@ -179,7 +179,7 @@ def build_candidates_heap_push(priorities, indices, p, n):
     return 1
 
 
-@numba.njit(parallel=True, locals={"idx": numba.types.int64})
+@numba.njit(parallel=True, locals={"idx": numba.types.int64}, cache=True)
 def build_candidates(current_graph, max_candidates, rng_state, n_threads):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
