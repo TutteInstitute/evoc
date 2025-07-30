@@ -477,7 +477,6 @@ def init_random_float(n_neighbors, data, heap, rng_state):
 
     return
 
-
 @numba.njit(
     numba.types.void(
         numba.float32[:, :, ::1],
@@ -490,9 +489,18 @@ def init_random_float(n_neighbors, data, heap, rng_state):
     ),
     locals={
         "data_p": numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        "dist_thresh_p": numba.float32,
+        "dist_thresh_q": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "max_updates": numba.int32,
+        "threshold_check": numba.boolean,
     },
     parallel=True,
     cache=True,
+    fastmath=True,
+    boundscheck=False,
 )
 def generate_graph_update_array_float(
     update_array,
@@ -503,21 +511,6 @@ def generate_graph_update_array_float(
     data,
     n_threads,
 ):
-    """
-    Generates an update array for graph updates based on the given candidate blocks and distance thresholds.
-
-    Args:
-        update_array (ndarray): The array to store the generated updates.
-        n_updates_per_thread (ndarray): The array to store the number of updates per thread.
-        new_candidate_block (ndarray): The block of new candidate indices.
-        old_candidate_block (ndarray): The block of old candidate indices.
-        dist_thresholds (ndarray): The distance thresholds for each data point.
-        data (ndarray): The data points.
-        n_threads (int): The number of threads.
-
-    Returns:
-        None
-    """
     block_size = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
@@ -525,57 +518,61 @@ def generate_graph_update_array_float(
 
     for t in numba.prange(n_threads):
         idx = 0
-        updates_are_full = False
+        max_updates = update_array.shape[1]
+        
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
-            if i >= block_size:
+            if i >= block_size or idx >= max_updates:
                 break
 
             for j in range(max_new_candidates):
-                p = int(new_candidate_block[i, j])
+                if idx >= max_updates:
+                    break
+                    
+                p = new_candidate_block[i, j]
                 if p < 0:
                     continue
                 data_p = data[p]
                 dist_thresh_p = dist_thresholds[p]
 
-                for k in range(j, max_new_candidates):
-                    q = int(new_candidate_block[i, k])
+                for k in range(j + 1, max_new_candidates):
+                    if idx >= max_updates:
+                        break
+                        
+                    q = new_candidate_block[i, k]
                     if q < 0:
                         continue
 
+                    # Compute distance once
                     d = fast_cosine(data_p, data[q])
-                    if d <= dist_thresh_p or d <= dist_thresholds[q]:
+                    
+                    # Cache threshold and do single comparison check
+                    dist_thresh_q = dist_thresholds[q]
+                    threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                    
+                    if threshold_check:
                         update_array[t, idx, 0] = p
                         update_array[t, idx, 1] = q
                         update_array[t, idx, 2] = d
                         idx += 1
-                        if idx >= update_array.shape[1]:
-                            updates_are_full = True
-                            break
-
-                if updates_are_full:
-                    break
 
                 for k in range(max_old_candidates):
-                    q = int(old_candidate_block[i, k])
+                    if idx >= max_updates:
+                        break
+                        
+                    q = old_candidate_block[i, k]
                     if q < 0:
                         continue
 
                     d = fast_cosine(data_p, data[q])
-                    if d <= dist_thresh_p or d <= dist_thresholds[q]:
+                    dist_thresh_q = dist_thresholds[q]
+                    threshold_check = d <= dist_thresh_p or d <= dist_thresh_q
+                    
+                    if threshold_check:
                         update_array[t, idx, 0] = p
                         update_array[t, idx, 1] = q
                         update_array[t, idx, 2] = d
                         idx += 1
-                        if idx >= update_array.shape[1]:
-                            updates_are_full = True
-                            break
-
-                if updates_are_full:
-                    break
-
-            if updates_are_full:
-                break
 
         n_updates_per_thread[t] = idx
 
