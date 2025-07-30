@@ -222,37 +222,35 @@ def build_candidates(current_graph, max_candidates, rng_state, n_threads):
         for i in range(n_vertices):
             for j in range(n_neighbors):
                 idx = current_indices[i, j]
-                isn = current_flags[i, j]
 
-                if idx < 0:
-                    continue
+                if idx >= 0 and (i % n_threads == n or idx % n_threads == n):
+                    isn = current_flags[i, j]
+                    d = tau_rand(local_rng_state)
 
-                d = tau_rand(local_rng_state)
-
-                if isn:
-                    if i % n_threads == n:
-                        build_candidates_heap_push(
-                            new_candidate_priority[i], new_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        build_candidates_heap_push(
-                            new_candidate_priority[idx],
-                            new_candidate_indices[idx],
-                            d,
-                            i,
-                        )
-                else:
-                    if i % n_threads == n:
-                        build_candidates_heap_push(
-                            old_candidate_priority[i], old_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        build_candidates_heap_push(
-                            old_candidate_priority[idx],
-                            old_candidate_indices[idx],
-                            d,
-                            i,
-                        )
+                    if isn:
+                        if i % n_threads == n:
+                            build_candidates_heap_push(
+                                new_candidate_priority[i], new_candidate_indices[i], d, idx
+                            )
+                        if idx % n_threads == n:
+                            build_candidates_heap_push(
+                                new_candidate_priority[idx],
+                                new_candidate_indices[idx],
+                                d,
+                                i,
+                            )
+                    else:
+                        if i % n_threads == n:
+                            build_candidates_heap_push(
+                                old_candidate_priority[i], old_candidate_indices[i], d, idx
+                            )
+                        if idx % n_threads == n:
+                            build_candidates_heap_push(
+                                old_candidate_priority[idx],
+                                old_candidate_indices[idx],
+                                d,
+                                i,
+                            )
 
     indices = current_graph[0]
     flags = current_graph[2]
