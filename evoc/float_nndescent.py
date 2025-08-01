@@ -599,11 +599,6 @@ def generate_graph_update_array_float_basic(
 
         n_updates_per_thread[t] = idx
 
-
-# Create an alias for the optimized version to use as "original" in benchmarks
-generate_graph_update_array_float_original = generate_graph_update_array_float_basic
-
-
 @numba.njit(
     numba.void(
         numba.float32[:, :, ::1],
