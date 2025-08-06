@@ -193,7 +193,7 @@ def boruvka_tree_query(tree, node_components, point_components, core_distances):
     candidate_indices = np.full(tree.data.shape[0], -1, dtype=np.int32)
     component_nearest_neighbor_dist = np.full(tree.data.shape[0], np.inf, dtype=np.float32)
 
-    data = np.asarray(tree.data.astype(np.float32))
+    data = tree.data.astype(np.float32)  # Remove unnecessary copy
 
     for i in numba.prange(tree.data.shape[0]):
         distance_lower_bound = point_to_node_lower_bound_rdist(tree.node_bounds[0, 0], tree.node_bounds[1, 0],
@@ -254,15 +254,19 @@ def boruvka_tree_query_reproducible(tree, node_components, point_components, cor
     candidate_indices = np.full(tree.data.shape[0], -1, dtype=np.int32)
     component_nearest_neighbor_dist = np.full(tree.data.shape[0], np.inf, dtype=np.float32)
     
-    data = np.asarray(tree.data.astype(np.float32))
+    data = tree.data.astype(np.float32)  # Remove unnecessary copy
+    
+    # Reusable buffer for block component bounds (allocate once, reuse)
+    max_block_component_bounds = np.full(block_size, np.inf, dtype=np.float32)
     
     # Process points in blocks
     for block_start in range(0, tree.data.shape[0], block_size):
         block_end = min(block_start + block_size, tree.data.shape[0])
         block_size_actual = block_end - block_start
         
-        # Local component bounds for this block (to avoid race conditions)
-        block_component_bounds = np.full(block_size_actual, np.inf, dtype=np.float32)
+        # Reset only the portion we'll use
+        for i in range(block_size_actual):
+            max_block_component_bounds[i] = np.inf
         
         # Parallel processing within the block
         for i in numba.prange(block_start, block_end):
@@ -290,10 +294,10 @@ def boruvka_tree_query_reproducible(tree, node_components, point_components, cor
             )
             
             # Store the potentially updated bound for this point
-            block_component_bounds[i - block_start] = local_component_bound[0]
+            max_block_component_bounds[i - block_start] = local_component_bound[0]
         
         # Sequential update of global component bounds after the block
-        update_component_bounds_from_block(component_nearest_neighbor_dist, block_component_bounds, 
+        update_component_bounds_from_block(component_nearest_neighbor_dist, max_block_component_bounds, 
                                           point_components, block_start, block_end)
     
     return candidate_distances, candidate_indices
@@ -337,16 +341,22 @@ def parallel_boruvka(tree, min_samples=10, reproducible=False):
     if min_samples > 1:
         distances, neighbors = parallel_tree_query(tree, tree.data, k=min_samples + 1, output_rdist=True)
         core_distances = distances.T[-1]
-        edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
+        initial_edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
     else:
         core_distances = np.zeros(tree.data.shape[0], dtype=np.float32)
         distances, neighbors = parallel_tree_query(tree, tree.data, k=2)
-        edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
+        initial_edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
     # Get number of threads for block size calculation
     num_threads = numba.get_num_threads()
+    
+    # Count initial components after initialization
+    n_components = len(np.unique(point_components))
+    
+    # Use list to accumulate edges, then convert at end (more efficient than vstack)
+    all_edges = [initial_edges]
 
     while n_components > 1:
         if reproducible:
@@ -359,11 +369,17 @@ def parallel_boruvka(tree, min_samples=10, reproducible=False):
                 tree, node_components, point_components, core_distances)
         
         new_edges = merge_components(components_disjoint_set, candidate_indices, candidate_distances, point_components)
+        
+        # Update component count more efficiently - subtract merged components
+        n_components -= len(new_edges)
+        
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
-        edges = np.vstack((edges, new_edges))
-        n_components = np.unique(point_components).shape[0]
+        if len(new_edges) > 0:
+            all_edges.append(new_edges)
 
+    # Combine all edges at once (more efficient than repeated vstack)
+    edges = np.vstack(all_edges)
     edges[:, 2] = np.sqrt(edges.T[2])
     return edges
 
