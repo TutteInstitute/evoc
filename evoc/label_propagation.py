@@ -136,7 +136,7 @@ def label_propagation_init(
         (np.ones(partition.shape[0]), partition, np.arange(partition.shape[0] + 1)),
         shape=(partition.shape[0], partition.max() + 1),
     )
-    reduced_graph = (reduction_map.T * graph * reduction_map).tocoo()
+    reduced_graph = (reduction_map.T * graph * reduction_map)
     reduced_graph.data = np.clip(reduced_graph.data, 0.0, 1.0)
     reduced_layout = node_embedding(
         reduced_graph, n_components, 50, verbose=False, noise_level=noise_level, random_state=random_state

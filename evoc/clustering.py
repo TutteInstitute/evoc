@@ -2,7 +2,7 @@ import numpy as np
 import numba
 
 from sklearn.base import BaseEstimator, ClusterMixin
-from sklearn.utils import check_array
+from sklearn.utils import check_array, check_random_state
 from sklearn.utils.validation import check_is_fitted
 from sklearn.neighbors import KDTree
 
@@ -248,6 +248,8 @@ def evoc_clusters(
     return_duplicates=False,
     node_embedding_dim=None,
     neighbor_scale=1.0,
+    random_state=None,
+    reproducible_flag=True,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -327,6 +329,10 @@ def evoc_clusters(
         can be used to increase the number of neighbors used in the graph construction
         by scaling the number of neighbors by this factor.
 
+    random_state : np.random.RandomState or None, default=None
+        The random state to use for the random number generator. If None, the random
+        number generator will not be seeded and will use the system time as the seed.
+
     Returns
     -------
 
@@ -342,31 +348,37 @@ def evoc_clusters(
         Only returned in ``return_duplicates`` is True. A set of pairs of indices of
         potential duplicate points in the data.
     """
-    nn_inds, nn_dists = knn_graph(data, n_neighbors=n_neighbors)
+    if random_state is None:
+        random_state = np.random.RandomState()
+
+    nn_inds, nn_dists = knn_graph(data, n_neighbors=n_neighbors, random_state=random_state)
     graph = neighbor_graph_matrix(
         neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
     )
+    n_embedding_components = node_embedding_dim or min(max(n_neighbors // 4, 4), 15)
     if node_embedding_init == "label_prop":
         init_embedding = label_propagation_init(
             graph,
-            n_components=node_embedding_dim or min(n_neighbors, 15),
+            n_components=n_embedding_components,
             approx_n_parts=np.clip(int(np.sqrt(data.shape[0])), 100, 1024),
             random_scale=0.1,
             scaling=0.5,
             noise_level=noise_level,
+            random_state=random_state,
         )
     elif node_embedding_init is None:
         init_embedding = None
 
-    graph = graph.tocoo()
     embedding = node_embedding(
         graph,
-        n_components=min(n_neighbors, 15),
+        n_components=n_embedding_components,
         n_epochs=n_epochs,
         initial_embedding=init_embedding,
         negative_sample_rate=1.0,
         noise_level=noise_level,
+        random_state=random_state,
         verbose=False,
+        reproducible_flag=reproducible_flag,
     )
 
     if return_duplicates:
@@ -472,6 +484,10 @@ class EVoC(BaseEstimator, ClusterMixin):
         can be used to increase the number of neighbors used in the graph construction
         by scaling the number of neighbors by this factor.
 
+    random_state : int or None, default=None
+        The random seed to use for the random number generator. If None, the random
+        number generator will not be seeded and will use the system time as the seed.
+
     Attributes
     ----------
 
@@ -517,6 +533,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         symmetrize_graph: bool = True,
         node_embedding_dim: int | None = None,
         neighbor_scale: float = 1.0,
+        random_state: int | None = None,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
@@ -531,6 +548,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.symmetrize_graph = symmetrize_graph
         self.node_embedding_dim = node_embedding_dim
         self.neighbor_scale = neighbor_scale
+        self.random_state = random_state
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -560,6 +578,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         """
 
         X = check_array(X)
+        current_random_state = check_random_state(self.random_state)
 
         self.cluster_layers_, self.membership_strength_layers_, self.duplicates_ = (
             evoc_clusters(
@@ -578,6 +597,8 @@ class EVoC(BaseEstimator, ClusterMixin):
                 return_duplicates=True,
                 node_embedding_dim=self.node_embedding_dim,
                 neighbor_scale=self.neighbor_scale,
+                random_state=current_random_state,
+                reproducible_flag=self.random_state is not None,
             )
         )
 
