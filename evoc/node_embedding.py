@@ -122,7 +122,7 @@ def node_embedding_epoch(
             )
 
 @numba.njit(
-    "void(f4[:, ::1], u4[::1], u4[::1], u4, f4[::1], u4, u1, f4, f4[::1], f4[::1], f4[::1], u1, f4, f4[:, ::1], u4[::1], u4)",
+    "void(f4[:, ::1], u4[::1], u4[::1], u4, f4[::1], u4, u1, f4, f4[::1], f4[::1], f4[::1], u1, f4, f4, f4[:, ::1], u4[::1], u4)",
     fastmath=True,
     parallel=True,
     locals={
@@ -131,8 +131,18 @@ def node_embedding_epoch(
         "to_node": numba.types.intp,
         "raw_index": numba.types.intp,
         "dist_squared": numba.types.float32,
+        "dist": numba.types.float32,
         "grad_coeff": numba.types.float32,
         "grad_d": numba.types.float32,
+        "current": numba.types.float32[::1],
+        "other": numba.types.float32[::1],
+        "block_start": numba.types.intp,
+        "block_end": numba.types.intp,
+        "node_idx": numba.types.intp,
+        "d": numba.types.uint8,
+        "n": numba.types.uint8,
+        "p": numba.types.uint8,
+        "n_neg_samples": numba.types.uint8,
     },
 )
 def node_embedding_epoch_repr(
@@ -149,6 +159,7 @@ def node_embedding_epoch_repr(
     epoch_of_next_sample,
     n,
     noise_level,
+    gamma,
     updates,
     node_order,
     block_size=4096,
@@ -188,7 +199,8 @@ def node_embedding_epoch_repr(
                         dist_squared = rdist(current, other)
 
                         if dist_squared > 1e-2:
-                            grad_coeff = 4.0 / ((1.0 + 0.25 * dist_squared) * dist_squared)
+                            grad_coeff = gamma * 4.0 / ((1.0 + 0.25 * dist_squared) * dist_squared)
+                            # grad_coeff /= n_neg_samples
 
                             if grad_coeff > 0.0:
                                 for d in range(dim):
@@ -204,7 +216,6 @@ def node_embedding_epoch_repr(
             for d in range(dim):
                 embedding[from_node, d] += updates[from_node, d]
 
-
 def node_embedding(
     graph,
     n_components,
@@ -214,6 +225,7 @@ def node_embedding(
     negative_sample_rate=1.0,
     noise_level=0.5,
     random_state=None,
+    reproducible_flag=True,
     verbose=False,
     tqdm_kwds={},
 ):
@@ -230,6 +242,8 @@ def node_embedding(
         np.float32, order="C"
     )
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
+    if reproducible_flag:
+        epochs_per_negative_sample *= 1.5
     epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
     epoch_of_next_sample = epochs_per_sample.copy()
 
@@ -240,22 +254,25 @@ def node_embedding(
         tqdm_kwds["disable"] = not verbose
 
     rng_val = random_state.randint(INT32_MAX, size=n_epochs)
-    head_u4 = graph.row.astype(np.uint32)
-    tail_u4 = graph.col.astype(np.uint32)
+
+    coo_graph = graph.tocoo()
+    head_u4 = coo_graph.row.astype(np.uint32)
+    tail_u4 = coo_graph.col.astype(np.uint32)
     # New
-    csr_graph = graph.tocsr()
-    csr_indptr = csr_graph.indptr.astype(np.uint32)
-    csr_indices = csr_graph.indices.astype(np.uint32)
+    csr_indptr = graph.indptr.astype(np.uint32)
+    csr_indices = graph.indices.astype(np.uint32)
     updates = np.zeros_like(embedding)
     node_order = np.arange(graph.shape[0], dtype=np.uint32)
+    gamma_schedule = np.linspace(0.5, 1.5, n_epochs)
     # End new
     n_vertices = np.uint32(graph.shape[0])
+    block_size = max(1024, n_vertices // 8)
     dim = np.uint8(embedding.shape[1])
     alpha = np.float32(initial_alpha)
 
     for n in tqdm(range(n_epochs), **tqdm_kwds):
 
-        if False:
+        if not reproducible_flag:
             node_embedding_epoch(
                 embedding,
                 head_u4,
@@ -286,11 +303,12 @@ def node_embedding(
                 epoch_of_next_sample,
                 np.uint8(n),
                 np.float32(noise_level),
+                gamma_schedule[n],
                 updates,
                 node_order,
-                np.uint32(4096),
+                np.uint32(block_size),
             )
-            updates *= (1.0 - alpha) * 0.5
+            updates *= (1.0 - alpha)**2 * 0.5
             random_state.shuffle(node_order)
         alpha = np.float32(initial_alpha * (1.0 - (float(n) / float(n_epochs))))
 
