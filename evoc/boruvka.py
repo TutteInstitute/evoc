@@ -216,6 +216,87 @@ def boruvka_tree_query(tree, node_components, point_components, core_distances):
 
     return candidate_distances, candidate_indices
 
+def calculate_block_size(n_components, n_points, num_threads):
+    """Calculate adaptive block size based on component sizes."""
+    if n_components == 0:
+        points_per_component = n_points
+    else:
+        points_per_component = n_points / n_components
+    
+    if points_per_component < 10:
+        block_size = num_threads * 512    # Weak pruning, large blocks
+    elif points_per_component < 100:
+        block_size = num_threads * 128    # Moderate pruning
+    elif points_per_component < 1000:
+        block_size = num_threads * 32    # Good pruning
+    else:
+        block_size = num_threads * 8     # Excellent pruning, small blocks
+
+    # Ensure reasonable bounds
+    block_size = max(num_threads, min(block_size, n_points // 4 + 1))
+    return int(block_size)
+
+
+@numba.njit(cache=True)
+def update_component_bounds_from_block(component_nearest_neighbor_dist, block_component_bounds, point_components, block_start, block_end):
+    """Update global component bounds from block results."""
+    for i in range(block_start, block_end):
+        component = point_components[i]
+        block_bound = block_component_bounds[i - block_start]
+        if block_bound < component_nearest_neighbor_dist[component]:
+            component_nearest_neighbor_dist[component] = block_bound
+
+
+@numba.njit(parallel=True, cache=True)
+def boruvka_tree_query_reproducible(tree, node_components, point_components, core_distances, block_size):
+    """Reproducible version using block-based processing to avoid race conditions."""
+    candidate_distances = np.full(tree.data.shape[0], np.inf, dtype=np.float32)
+    candidate_indices = np.full(tree.data.shape[0], -1, dtype=np.int32)
+    component_nearest_neighbor_dist = np.full(tree.data.shape[0], np.inf, dtype=np.float32)
+    
+    data = np.asarray(tree.data.astype(np.float32))
+    
+    # Process points in blocks
+    for block_start in range(0, tree.data.shape[0], block_size):
+        block_end = min(block_start + block_size, tree.data.shape[0])
+        block_size_actual = block_end - block_start
+        
+        # Local component bounds for this block (to avoid race conditions)
+        block_component_bounds = np.full(block_size_actual, np.inf, dtype=np.float32)
+        
+        # Parallel processing within the block
+        for i in numba.prange(block_start, block_end):
+            distance_lower_bound = point_to_node_lower_bound_rdist(tree.node_bounds[0, 0], tree.node_bounds[1, 0],
+                                                                   tree.data[i])
+            heap_p, heap_i = candidate_distances[i:i + 1], candidate_indices[i:i + 1]
+            
+            # Use current global bounds for this component
+            current_component = point_components[i]
+            local_component_bound = component_nearest_neighbor_dist[current_component:current_component + 1]
+            
+            component_aware_query_recursion(
+                tree,
+                0,
+                data[i],
+                heap_p,
+                heap_i,
+                core_distances[i],
+                core_distances,
+                point_components[i],
+                node_components,
+                point_components,
+                distance_lower_bound,
+                local_component_bound
+            )
+            
+            # Store the potentially updated bound for this point
+            block_component_bounds[i - block_start] = local_component_bound[0]
+        
+        # Sequential update of global component bounds after the block
+        update_component_bounds_from_block(component_nearest_neighbor_dist, block_component_bounds, 
+                                          point_components, block_start, block_end)
+    
+    return candidate_distances, candidate_indices
 
 @numba.njit(parallel=True, cache=True)
 def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disjoint_set):
@@ -247,7 +328,7 @@ def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disj
     return result[:result_idx]
 
 
-def parallel_boruvka(tree, min_samples=10):
+def parallel_boruvka(tree, min_samples=10, reproducible=False):
     components_disjoint_set = ds_rank_create(tree.data.shape[0])
     point_components = np.arange(tree.data.shape[0])
     node_components = np.full(tree.node_data.shape[0], -1)
@@ -264,9 +345,19 @@ def parallel_boruvka(tree, min_samples=10):
         edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
+    # Get number of threads for block size calculation
+    num_threads = numba.get_num_threads()
+
     while n_components > 1:
-        candidate_distances, candidate_indices = boruvka_tree_query(tree, node_components, point_components,
-                                                                    core_distances)
+        if reproducible:
+            # Calculate adaptive block size based on current component sizes
+            block_size = calculate_block_size(n_components, tree.data.shape[0], num_threads)
+            candidate_distances, candidate_indices = boruvka_tree_query_reproducible(
+                tree, node_components, point_components, core_distances, block_size)
+        else:
+            candidate_distances, candidate_indices = boruvka_tree_query(
+                tree, node_components, point_components, core_distances)
+        
         new_edges = merge_components(components_disjoint_set, candidate_indices, candidate_distances, point_components)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
@@ -275,3 +366,4 @@ def parallel_boruvka(tree, min_samples=10):
 
     edges[:, 2] = np.sqrt(edges.T[2])
     return edges
+

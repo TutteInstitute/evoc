@@ -106,6 +106,7 @@ def build_cluster_layers(
     base_min_cluster_size=10,
     base_n_clusters=None,
     next_cluster_size_quantile=0.8,
+    reproducible_flag=False,
 ):
     n_samples = data.shape[0]
     cluster_layers = []
@@ -116,7 +117,7 @@ def build_cluster_layers(
     sklearn_tree = KDTree(data)
     numba_tree = kdtree_to_numba(sklearn_tree)
     edges = parallel_boruvka(
-        numba_tree, min_samples=min_cluster_size if min_samples is None else min_samples
+        numba_tree, min_samples=min_cluster_size if min_samples is None else min_samples, reproducible=reproducible_flag
     )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
@@ -402,6 +403,7 @@ def evoc_clusters(
             base_min_cluster_size=base_min_cluster_size,
             base_n_clusters=base_n_clusters,
             next_cluster_size_quantile=next_cluster_size_quantile,
+            reproducible_flag=reproducible_flag,
         )
         if return_duplicates:
             return cluster_layers, membership_strengths, duplicates
