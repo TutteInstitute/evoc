@@ -379,7 +379,9 @@ def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disj
         for j in range(1, knn_indices.shape[1]):
             k = np.int32(knn_indices[i, j])
             if core_distances[i] >= core_distances[k]:
-                component_edges[i] = (np.float64(i), np.float64(k), np.float64(core_distances[i]))
+                # Use max of core distance and actual distance as edge weight
+                edge_weight = max(core_distances[i], knn_distances[i, j])
+                component_edges[i] = (np.float64(i), np.float64(k), np.float64(edge_weight))
                 break
 
     result = np.empty((len(component_edges), 3), dtype=np.float64)
@@ -413,7 +415,7 @@ def parallel_boruvka(tree, min_samples=10, reproducible=False):
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
     else:
         core_distances = np.zeros(tree.data.shape[0], dtype=np.float32)
-        distances, neighbors = parallel_tree_query(tree, tree.data, k=2)
+        distances, neighbors = parallel_tree_query(tree, tree.data, k=2, output_rdist=True)
         initial_edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
