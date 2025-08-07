@@ -4,9 +4,8 @@ import numba
 from sklearn.base import BaseEstimator, ClusterMixin
 from sklearn.utils import check_array, check_random_state
 from sklearn.utils.validation import check_is_fitted
-from sklearn.neighbors import KDTree
 
-from .numba_kdtree import kdtree_to_numba
+from .numba_kdtree import build_kdtree
 from .boruvka import parallel_boruvka
 from .cluster_trees import (
     mst_to_linkage_tree,
@@ -114,8 +113,7 @@ def build_cluster_layers(
 
     min_cluster_size = base_min_cluster_size
 
-    sklearn_tree = KDTree(data)
-    numba_tree = kdtree_to_numba(sklearn_tree)
+    numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(
         numba_tree, min_samples=min_cluster_size if min_samples is None else min_samples, reproducible=reproducible_flag
     )
@@ -219,8 +217,7 @@ def binary_search_for_n_clusters(
     *,
     min_samples=5,
 ):
-    sklearn_tree = KDTree(data)
-    numba_tree = kdtree_to_numba(sklearn_tree)
+    numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(numba_tree, min_samples=min_samples)
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)

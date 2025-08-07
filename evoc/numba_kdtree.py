@@ -3,7 +3,7 @@ import numpy as np
 
 from collections import namedtuple
 
-NumbaKDTree = namedtuple("KDTree", ["data", "idx_array", "node_data", "node_bounds"])
+NumbaKDTree = namedtuple("KDTree", ["data", "idx_array", "idx_start", "idx_end", "radius", "is_leaf", "node_bounds"])
 NodeData = namedtuple("NodeData", ["idx_start", "idx_end", "radius", "is_leaf"])
 
 NodeDataType = numba.types.NamedTuple([
@@ -15,18 +15,9 @@ NodeDataType = numba.types.NamedTuple([
 
 def kdtree_to_numba(sklearn_kdtree):
     data, idx_array, node_data, node_bounds = sklearn_kdtree.get_arrays()
-    return NumbaKDTree(data, idx_array, node_data, node_bounds)
+    return NumbaKDTree(data, idx_array, node_data.idx_start, node_data.idx_end, node_data.radius, node_data.is_leaf, node_bounds)
 
 @numba.njit(
-    numba.types.void(
-        numba.types.float32[:, ::1],
-        numba.types.float32[:, :, ::1],
-        numba.types.intp[::1],
-        NodeDataType,
-        numba.types.intp,
-        numba.types.intp,
-        numba.types.intp,
-    ),
     cache=True,
     fastmath=True,
     locals={
@@ -38,7 +29,7 @@ def kdtree_to_numba(sklearn_kdtree):
         "data_row": numba.types.float32[::1],
     }
 )
-def _init_node(data, node_bounds, idx_array, node_data, node, idx_start, idx_end):
+def _init_node(data, node_bounds, idx_array, idx_start_array, idx_end_array, radius_array, is_leaf_array, node, idx_start, idx_end):
 
     n_features = data.shape[1]
     lower_bounds = node_bounds[0, node, :]
@@ -61,10 +52,10 @@ def _init_node(data, node_bounds, idx_array, node_data, node, idx_start, idx_end
         diff = abs(upper_bounds[j] - lower_bounds[j]) * 0.5
         radius += diff * diff
 
-    node_data.idx_start[node] = idx_start
-    node_data.idx_end[node] = idx_end
+    idx_start_array[node] = idx_start
+    idx_end_array[node] = idx_end
 
-    node_data.radius[node] = np.sqrt(radius)
+    radius_array[node] = np.sqrt(radius)
 
 
 @numba.njit(
@@ -336,15 +327,6 @@ def _introselect(data, idx_array, axis, left, right, nth):
 
 
 @numba.njit(
-    numba.types.void(
-        numba.types.float32[:, ::1],
-        numba.types.intp[::1],
-        NodeDataType,
-        numba.types.float32[:, :, ::1],
-        numba.types.intp,
-        numba.types.intp,
-        numba.types.intp,
-    ),
     cache=True,
     locals={
         "n_points": numba.types.intp,
@@ -355,7 +337,10 @@ def _introselect(data, idx_array, axis, left, right, nth):
 def _recursive_build_tree(
     data,
     idx_array,
-    node_data,
+    idx_start_array,
+    idx_end_array,
+    radius_array,
+    is_leaf_array,
     node_bounds,
     idx_start,
     idx_end,
@@ -364,18 +349,18 @@ def _recursive_build_tree(
     n_points = idx_end - idx_start
     n_mid = n_points // 2
 
-    _init_node(data, node_bounds, idx_array, node_data, node, idx_start, idx_end)
+    _init_node(data, node_bounds, idx_array, idx_start_array, idx_end_array, radius_array, is_leaf_array, node, idx_start, idx_end)
 
-    if 2 * node + 1 >= node_data.is_leaf.shape[0]:
-        node_data.is_leaf[node] = True
+    if 2 * node + 1 >= is_leaf_array.shape[0]:
+        is_leaf_array[node] = True
     elif idx_end - idx_start < 2:
-        node_data.is_leaf[node] = True
+        is_leaf_array[node] = True
     else:
-        node_data.is_leaf[node] = False
+        is_leaf_array[node] = False
         axis = _find_node_split_dim(data, idx_array, idx_start, idx_end)
         _introselect(data, idx_array, axis, idx_start, idx_end, idx_start + n_mid)
-        _recursive_build_tree(data, idx_array, node_data, node_bounds, idx_start, idx_start + n_mid, 2 * node + 1)
-        _recursive_build_tree(data, idx_array, node_data, node_bounds, idx_start + n_mid, idx_end, 2 * node + 2)
+        _recursive_build_tree(data, idx_array, idx_start_array, idx_end_array, radius_array, is_leaf_array, node_bounds, idx_start, idx_start + n_mid, 2 * node + 1)
+        _recursive_build_tree(data, idx_array, idx_start_array, idx_end_array, radius_array, is_leaf_array, node_bounds, idx_start + n_mid, idx_end, 2 * node + 2)
 
     return
 
@@ -398,25 +383,26 @@ def build_kdtree(data, leaf_size=40):
 
         # allocate arrays for storage
         idx_array = np.arange(n_samples, dtype=np.intp)
-        node_data = NodeData(
-            np.zeros(n_nodes, dtype=np.intp),
-            np.zeros(n_nodes, dtype=np.intp),
-            np.zeros(n_nodes, dtype=np.float32),
-            np.zeros(n_nodes, dtype=np.bool_),
-        )
+        idx_start_array = np.zeros(n_nodes, dtype=np.intp)
+        idx_end_array = np.zeros(n_nodes, dtype=np.intp)
+        radius_array = np.zeros(n_nodes, dtype=np.float32)
+        is_leaf_array = np.zeros(n_nodes, dtype=np.bool_)
         node_bounds = np.zeros((2, n_nodes, n_features), dtype=np.float32)
 
         _recursive_build_tree(
             data,
             idx_array,
-            node_data,
+            idx_start_array,
+            idx_end_array,
+            radius_array,
+            is_leaf_array,
             node_bounds,
             0,
             n_samples,
             0,
         )
         
-        return NumbaKDTree(data, idx_array, node_data, node_bounds)
+        return NumbaKDTree(data, idx_array, idx_start_array, idx_end_array, radius_array, is_leaf_array, node_bounds)
 
 @numba.njit(
     [
@@ -600,9 +586,9 @@ def tree_query_recursion(
         dist_lower_bound,
 ):
     # Get node information
-    idx_start = tree.node_data.idx_start[node]
-    idx_end = tree.node_data.idx_end[node]
-    is_leaf = tree.node_data.is_leaf[node]
+    idx_start = tree.idx_start[node]
+    idx_end = tree.idx_end[node]
+    is_leaf = tree.is_leaf[node]
 
     # ------------------------------------------------------------
     # Case 1: query point is outside node radius:

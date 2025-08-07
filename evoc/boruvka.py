@@ -50,15 +50,18 @@ def update_component_vectors(tree, disjoint_set, node_components, point_componen
     for i in numba.prange(point_components.shape[0]):
         point_components[i] = ds_find(disjoint_set, np.int32(i))
 
-    for i in range(tree.node_data.shape[0] - 1, -1, -1):
-        node_info = tree.node_data[i]
+    for i in range(tree.idx_start.shape[0] - 1, -1, -1):
+        # Access node information from the separate arrays
+        is_leaf = tree.is_leaf[i]
+        idx_start = tree.idx_start[i]
+        idx_end = tree.idx_end[i]
 
         # Case 1:
         #    If the node is a leaf we need to check that every point
         #    in the node is of the same component
-        if node_info.is_leaf:
-            candidate_component = point_components[tree.idx_array[node_info.idx_start]]
-            for j in range(node_info.idx_start + 1, node_info.idx_end):
+        if is_leaf:
+            candidate_component = point_components[tree.idx_array[idx_start]]
+            for j in range(idx_start + 1, idx_end):
                 idx = tree.idx_array[j]
                 if point_components[idx] != candidate_component:
                     break
@@ -103,7 +106,10 @@ def component_aware_query_recursion(
         dist_lower_bound,
         component_nearest_neighbor_dist,
 ):
-    node_info = tree.node_data[node]
+    # Access node information from the separate arrays
+    is_leaf = tree.is_leaf[node]
+    idx_start = tree.idx_start[node]
+    idx_end = tree.idx_end[node]
 
     # ------------------------------------------------------------
     # Case 1a: query point is outside node radius:
@@ -126,8 +132,8 @@ def component_aware_query_recursion(
 
     # ------------------------------------------------------------
     # Case 2: this is a leaf node.  Update set of nearby points
-    elif node_info.is_leaf:
-        for i in range(node_info.idx_start, node_info.idx_end):
+    elif is_leaf:
+        for i in range(idx_start, idx_end):
             idx = tree.idx_array[i]
             if point_components[idx] != current_component and core_distances[idx] < component_nearest_neighbor_dist[0]:
                 d = max(rdist(point, tree.data[idx]), current_core_distance, core_distances[idx])
@@ -397,7 +403,7 @@ def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disj
 def parallel_boruvka(tree, min_samples=10, reproducible=False):
     components_disjoint_set = ds_rank_create(tree.data.shape[0])
     point_components = np.arange(tree.data.shape[0])
-    node_components = np.full(tree.node_data.shape[0], -1)
+    node_components = np.full(tree.idx_start.shape[0], -1)
     n_components = point_components.shape[0]
 
     if min_samples > 1:
