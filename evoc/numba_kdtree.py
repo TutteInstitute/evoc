@@ -113,11 +113,6 @@ def _find_node_split_dim(data, idx_array, idx_start, idx_end):
     }
 )
 def _compare_indices(data, axis, idx1, idx2):
-    """
-    Compare two indices based on data values along axis.
-    Matches sklearn's comparison: compare data values, break ties with index values.
-    Returns: -1 if idx1 < idx2, 0 if equal, 1 if idx1 > idx2
-    """
     val1 = data[idx1, axis]
     val2 = data[idx2, axis]
     
@@ -146,9 +141,6 @@ def _compare_indices(data, axis, idx1, idx2):
     }
 )
 def _insertion_sort_indices(data, idx_array, axis, left, right):
-    """
-    Insertion sort for small subarrays.
-    """
     for i in range(left + 1, right):
         key_idx = idx_array[i]
         j = i - 1
@@ -171,9 +163,6 @@ def _insertion_sort_indices(data, idx_array, axis, left, right):
     }
 )
 def _sift_down_indices(data, idx_array, axis, offset, start, end):
-    """
-    Sift down operation for heapsort.
-    """
     root = start
     
     while root * 2 + 1 < end:
@@ -202,9 +191,6 @@ def _sift_down_indices(data, idx_array, axis, offset, start, end):
     }
 )
 def _heapsort_indices(data, idx_array, axis, left, right):
-    """
-    Heapsort for when introselect recursion gets too deep.
-    """
     size = right - left
     
     # Build heap
@@ -229,9 +215,6 @@ def _heapsort_indices(data, idx_array, axis, left, right):
     }
 )
 def _median_of_three_pivot(data, idx_array, axis, left, right):
-    """
-    Choose pivot using median-of-three strategy.
-    """
     mid = (left + right - 1) // 2
     
     idx_left = idx_array[left]
@@ -265,10 +248,6 @@ def _median_of_three_pivot(data, idx_array, axis, left, right):
     }
 )
 def _partition_indices(data, idx_array, axis, left, right, pivot_idx):
-    """
-    Partition indices around pivot using three-way partitioning.
-    Returns the final position of the pivot.
-    """
     # Move pivot to end
     idx_array[pivot_idx], idx_array[right - 1] = idx_array[right - 1], idx_array[pivot_idx]
     pivot_value = data[idx_array[right - 1], axis]
@@ -308,9 +287,6 @@ def _partition_indices(data, idx_array, axis, left, right, pivot_idx):
     }
 )
 def _introselect_impl(data, idx_array, axis, left, right, nth, depth_limit):
-    """
-    Main introselect implementation with depth limiting.
-    """
     while right - left > 16:
         if depth_limit == 0:
             # Fall back to heapsort when recursion gets too deep
@@ -347,10 +323,6 @@ def _introselect_impl(data, idx_array, axis, left, right, nth, depth_limit):
     }
 )
 def _introselect(data, idx_array, axis, left, right, nth):
-    """
-    Introselect algorithm - hybrid of quickselect and heapsort.
-    Efficiently finds the nth element in O(n) average time.
-    """
     size = right - left
     
     # Use heapsort for small arrays or when recursion depth is too high
@@ -361,7 +333,7 @@ def _introselect(data, idx_array, axis, left, right, nth):
     # Calculate maximum recursion depth (2 * log2(size))
     max_depth = 2 * int(np.log2(size))
     _introselect_impl(data, idx_array, axis, left, right, nth, max_depth)
-    
+
 
 @numba.njit(
     numba.types.void(
