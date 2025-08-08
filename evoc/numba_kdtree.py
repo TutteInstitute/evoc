@@ -12,6 +12,15 @@ NodeDataType = numba.types.NamedTuple([
     numba.types.float32[::1],
     numba.types.bool_[::1],
 ], NodeData)
+NumbaKDTreeType = numba.types.NamedTuple([
+    numba.types.float32[:, ::1],
+    numba.types.intp[::1],
+    numba.types.intp[::1],
+    numba.types.intp[::1],
+    numba.types.float32[::1],
+    numba.types.bool_[::1],
+    numba.types.float32[:, :, ::1],
+], NumbaKDTree)
 
 def kdtree_to_numba(sklearn_kdtree):
     data, idx_array, node_data, node_bounds = sklearn_kdtree.get_arrays()
@@ -364,7 +373,16 @@ def _recursive_build_tree(
 
     return
 
-
+# @numba.njit(
+# #    NumbaKDTreeType(numba.types.float32[:,::1], numba.types.intp),
+#     cache=True,
+#     locals={
+#         "n_samples": numba.types.intp,
+#         "n_features": numba.types.intp,
+#         "n_levels": numba.types.intp,
+#         "n_nodes": numba.types.intp,
+#     }
+# )
 def build_kdtree(data, leaf_size=40):
         n_samples = data.shape[0]
         n_features = data.shape[1]
