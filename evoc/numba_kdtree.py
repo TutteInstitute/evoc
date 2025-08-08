@@ -336,12 +336,8 @@ def _introselect(data, idx_array, axis, left, right, nth):
 
 
 @numba.njit(
+    'void(float32[:, ::1], intp[::1], intp[::1], intp[::1], float32[::1], bool_[::1], float32[:, :, ::1], intp, intp, intp)',
     cache=True,
-    locals={
-        "n_points": numba.types.intp,
-        "n_mid": numba.types.intp,
-        "axis": numba.types.intp,
-    }
 )
 def _recursive_build_tree(
     data,
@@ -373,24 +369,13 @@ def _recursive_build_tree(
 
     return
 
-# @numba.njit(
-# #    NumbaKDTreeType(numba.types.float32[:,::1], numba.types.intp),
-#     cache=True,
-#     locals={
-#         "n_samples": numba.types.intp,
-#         "n_features": numba.types.intp,
-#         "n_levels": numba.types.intp,
-#         "n_nodes": numba.types.intp,
-#     }
-# )
+@numba.njit(cache=True)
 def build_kdtree(data, leaf_size=40):
         n_samples = data.shape[0]
         n_features = data.shape[1]
 
         if leaf_size < 1:
             raise ValueError("leaf_size must be greater than or equal to 1")
-
-        metric = "euclidean"
 
         # determine number of levels in the tree, and from this
         # the number of nodes in the tree.  This results in leaf nodes
