@@ -319,6 +319,14 @@ def cluster_tree_from_condensed_tree(condensed_tree):
         condensed_tree.child_size[mask],
     )
 
+@numba.njit(cache=True)
+def mask_condensed_tree(condensed_tree, mask):
+    return CondensedTree(
+        condensed_tree.parent[mask], 
+        condensed_tree.child[mask], 
+        condensed_tree.lambda_val[mask],
+        condensed_tree.child_size[mask]
+    )
 
 @numba.njit(cache=True)
 def unselect_below_node(node, cluster_tree, selected_clusters):
