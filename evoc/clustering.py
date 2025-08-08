@@ -4,12 +4,14 @@ import numba
 from sklearn.base import BaseEstimator, ClusterMixin
 from sklearn.utils import check_array, check_random_state
 from sklearn.utils.validation import check_is_fitted
+from scipy.signal import find_peaks
 
 from .numba_kdtree import build_kdtree
 from .boruvka import parallel_boruvka
 from .cluster_trees import (
     mst_to_linkage_tree,
     condense_tree,
+    mask_condensed_tree,
     extract_leaves,
     get_cluster_label_vector,
     get_point_membership_strength_vector,
@@ -97,25 +99,200 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
             return upper_leaves, upper_clusters, strengths
 
 
+def binary_search_for_n_clusters(
+    data,
+    approx_n_clusters,
+    n_threads,
+    *,
+    min_samples=5,
+):
+    numba_tree = build_kdtree(data.astype(np.float32))
+    edges = parallel_boruvka(numba_tree, n_threads, min_samples=min_samples)
+    sorted_mst = edges[np.argsort(edges.T[2])]
+    uncondensed_tree = mst_to_linkage_tree(sorted_mst)
+
+    n_samples = data.shape[0]
+
+    leaves, clusters, strengths = _binary_search_for_n_clusters(
+        uncondensed_tree, approx_n_clusters, n_samples
+    )
+    return clusters, strengths
+
+@numba.njit(cache=True)
+def min_cluster_size_barcode(cluster_tree, n_points, min_size):
+    n_nodes = cluster_tree.child[-1] - n_points + 1
+    parents = np.empty(n_nodes, dtype=np.int32)
+    lambda_deaths = np.empty(n_nodes, dtype=np.float32)
+    size_deaths = np.empty(n_nodes, dtype=np.float32)
+    size_births = np.full(n_nodes, min_size, dtype=np.float32)
+    lambda_deaths[0] = 0
+    size_deaths[0] = n_points
+    parents[0] = n_points
+
+    # Iterate over row-pairs in reverse order
+    n_rows = cluster_tree.child.shape[0]
+    for idx in range(n_rows - 1, 0, -2):
+        out_idx = cluster_tree.child[idx] - n_points
+        parents[out_idx - 1 : out_idx + 1] = cluster_tree.parent[idx]
+        lambda_deaths[out_idx - 1 : out_idx + 1] =  np.exp(-1/cluster_tree.lambda_val[idx])
+
+        death_size = cluster_tree.child_size[idx - 1 : idx + 1].min()
+        size_deaths[out_idx - 1 : out_idx + 1] = death_size
+        size_births[cluster_tree.parent[idx] - n_points] = max(
+            size_births[out_idx - 1], size_births[out_idx], death_size
+        )
+
+    return size_births, size_deaths, parents, lambda_deaths
+
+@numba.njit(cache=True)
+def compute_total_persistence(births, deaths, lambda_deaths):
+    # maintain left-open (birth, death] interval!
+    sizes = np.unique(births)
+    total_persistence = np.zeros(sizes.shape[0], dtype=np.float32)
+    
+    for i in range(1, len(births)):
+        birth = births[i]
+        death = deaths[i]
+        lambda_death = lambda_deaths[i]
+        
+        if death <= birth:
+            continue
+            
+        # Manual binary search for birth_idx
+        birth_idx = 0
+        for j in range(len(sizes)):
+            if sizes[j] >= birth:
+                birth_idx = j
+                break
+                
+        # Manual binary search for death_idx  
+        death_idx = len(sizes)
+        for j in range(len(sizes)):
+            if sizes[j] >= death:
+                death_idx = j
+                break
+                
+        # Update persistence values
+        for k in range(birth_idx, death_idx):
+            total_persistence[k] += (death - birth) * lambda_death
+            
+    return sizes, total_persistence
+
+@numba.njit(cache=True)
+def extract_clusters_by_id(condensed_tree, selected_ids):
+    labels = get_cluster_label_vector(
+        condensed_tree,
+        selected_ids,
+        cluster_selection_epsilon=0.0,
+        n_samples=condensed_tree.parent[0],
+    )
+    strengths = get_point_membership_strength_vector(condensed_tree, selected_ids, labels)
+    return labels, strengths
+
+
+@numba.njit(cache=True)
+def jaccard_similarity(set_a_array, set_b_array):
+    # Convert to sets for intersection/union operations
+    intersection_count = 0
+    union_set = set(set_a_array)
+    
+    for item in set_b_array:
+        if item in union_set:
+            intersection_count += 1
+        else:
+            union_set.add(item)
+    
+    union_count = len(union_set)
+    return intersection_count / union_count if union_count > 0 else 0.0
+
+
+@numba.njit(cache=True)
+def estimate_cluster_similarity(births, deaths, birth_a, birth_b):
+    # Find clusters active at birth_a
+    clusters_a = np.empty(len(births), dtype=np.int64)
+    count_a = 0
+    for i in range(len(births)):
+        if births[i] <= birth_a and deaths[i] > birth_a:
+            clusters_a[count_a] = i
+            count_a += 1
+    
+    # Find clusters active at birth_b  
+    clusters_b = np.empty(len(births), dtype=np.int64)
+    count_b = 0
+    for i in range(len(births)):
+        if births[i] <= birth_b and deaths[i] > birth_b:
+            clusters_b[count_b] = i
+            count_b += 1
+    
+    # Trim arrays to actual sizes
+    active_a = clusters_a[:count_a]
+    active_b = clusters_b[:count_b]
+    
+    return jaccard_similarity(active_a, active_b)
+
+
+@numba.njit(cache=True)
+def select_diverse_peaks(peaks, total_persistence, sizes, births, deaths, 
+                              min_similarity_threshold=0.2, max_layers=10):
+    if len(peaks) == 0:
+        return np.empty(0, dtype=np.int64)
+    
+    # Sort peaks by persistence (highest first)
+    peak_persistence = total_persistence[peaks]
+    sorted_indices = np.argsort(peak_persistence)[::-1]
+    sorted_peaks = peaks[sorted_indices]
+    
+    # Pre-allocate arrays for selected peaks and births
+    selected_peaks = np.empty(max_layers, dtype=np.int64)
+    selected_births = np.empty(max_layers, dtype=np.float64)
+    n_selected = 0
+    
+    for i in range(len(sorted_peaks)):
+        if n_selected >= max_layers:
+            break
+            
+        peak = sorted_peaks[i]
+        birth_size = sizes[peak]
+        
+        # Check similarity with already selected peaks
+        is_diverse = True
+        for j in range(n_selected):
+            selected_birth = selected_births[j]
+            similarity = estimate_cluster_similarity(births, deaths, birth_size, selected_birth)
+            if similarity > min_similarity_threshold:
+                is_diverse = False
+                break
+        
+        if is_diverse:
+            selected_peaks[n_selected] = peak
+            selected_births[n_selected] = birth_size
+            n_selected += 1
+    
+    return selected_peaks[:n_selected]
+
+
+#@numba.njit(cache=True)
 def build_cluster_layers(
     data,
     *,
-    min_clusters=3,
     min_samples=5,
     base_min_cluster_size=10,
     base_n_clusters=None,
-    next_cluster_size_quantile=0.8,
     reproducible_flag=False,
+    min_similarity_threshold=0.2,
+    max_layers=10,
 ):
     n_samples = data.shape[0]
+    min_cluster_size = base_min_cluster_size
     cluster_layers = []
     membership_strength_layers = []
+    persistence_scores = []
 
-    min_cluster_size = base_min_cluster_size
+    n_threads = numba.get_num_threads()
 
     numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(
-        numba_tree, min_samples=min_cluster_size if min_samples is None else min_samples, reproducible=reproducible_flag
+        numba_tree, n_threads, min_samples=min_cluster_size if min_samples is None else min_samples, reproducible=reproducible_flag
     )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
@@ -124,34 +301,69 @@ def build_cluster_layers(
             uncondensed_tree, base_n_clusters, n_samples=n_samples
         )
         cluster_sizes = np.bincount(clusters[clusters >= 0])
-        min_cluster_size = np.min(cluster_sizes)
-    else:
-        new_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
-        leaves = extract_leaves(new_tree)
-        clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
-        strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
-
-    n_clusters_in_layer = clusters.max() + 1
-
-    while n_clusters_in_layer >= min_clusters:
-        cluster_layers.append(clusters)
-        membership_strength_layers.append(strengths)
-        cluster_sizes = np.bincount(clusters[clusters >= 0])
-        next_min_cluster_size = int(
-            np.quantile(cluster_sizes, next_cluster_size_quantile)
-        )
-        if next_min_cluster_size <= min_cluster_size + 1:
-            break
+        if len(cluster_sizes) > 0:
+            min_cluster_size = max(1, np.min(cluster_sizes))
         else:
-            min_cluster_size = next_min_cluster_size
-        new_tree = condense_tree(uncondensed_tree, min_cluster_size)
-        leaves = extract_leaves(new_tree)
-        clusters = get_cluster_label_vector(new_tree, leaves, 0.0, n_samples)
-        strengths = get_point_membership_strength_vector(new_tree, leaves, clusters)
-        n_clusters_in_layer = clusters.max() + 1
+            min_cluster_size = base_min_cluster_size
+        # Still need condensed tree for later processing
+        condensed_tree = condense_tree(uncondensed_tree, min_cluster_size)
+    else:
+        condensed_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
+        leaves = extract_leaves(condensed_tree)
+        clusters = get_cluster_label_vector(condensed_tree, leaves, 0.0, n_samples)
+        strengths = get_point_membership_strength_vector(condensed_tree, leaves, clusters)
 
-    return cluster_layers, membership_strength_layers
+    mask = condensed_tree.child >= n_samples
+    cluster_tree = mask_condensed_tree(condensed_tree, mask)
+    # points_tree = mask_condensed_tree(condensed_tree, ~mask)
+    
+    # Check if cluster_tree is valid before processing
+    if len(cluster_tree.child) > 0 and cluster_tree.child[-1] >= n_samples:
+        births, deaths, parents, lambda_deaths = min_cluster_size_barcode(cluster_tree, n_samples, min_cluster_size)
+        sizes, total_persistence = compute_total_persistence(births, deaths, lambda_deaths)
+        peaks, _ = find_peaks(total_persistence, distance=1)
+    else:
+        # Handle empty or invalid cluster tree
+        births = np.array([])
+        deaths = np.array([])
+        parents = np.array([])
+        lambda_deaths = np.array([])
+        sizes = np.array([])
+        total_persistence = np.array([])
+        peaks = np.array([], dtype=np.int64)
+    
+    # Always include the base layer (from initial condensed tree)
+    cluster_layers.append(clusters)
+    membership_strength_layers.append(strengths)
+    persistence_scores.append(0.0)  # Base layer gets 0 persistence score
+    
+    # Select diverse peaks using hierarchical selection
+    selected_peaks = select_diverse_peaks(
+        peaks, total_persistence, sizes, births, deaths,
+        min_similarity_threshold=min_similarity_threshold, 
+        max_layers=max_layers - 1  # Reserve one slot for base layer
+    )
+    
+    for peak in selected_peaks:
+        best_birth = sizes[peak]
+        persistence = total_persistence[peak]
+        selected_clusters = (
+            np.where((births <= best_birth) & (deaths > best_birth))[0] + n_samples
+        )
+        labels, strengths = extract_clusters_by_id(condensed_tree, selected_clusters)
+        cluster_layers.append(labels)
+        membership_strength_layers.append(strengths)
+        persistence_scores.append(persistence)
 
+    # Sort cluster layers by number of clusters (most clusters first)
+    n_clusters_per_layer = [layer.max() + 1 for layer in cluster_layers]
+    sorted_indices = np.argsort(n_clusters_per_layer)[::-1]  # Descending order
+    
+    cluster_layers = [cluster_layers[i] for i in sorted_indices]
+    membership_strength_layers = [membership_strength_layers[i] for i in sorted_indices] 
+    persistence_scores = [persistence_scores[i] for i in sorted_indices]
+
+    return cluster_layers, membership_strength_layers, persistence_scores
 
 @numba.njit(cache=True)
 def find_duplicates(knn_inds, knn_dists):
@@ -211,35 +423,14 @@ def build_cluster_tree(labels):
     return result
 
 
-def binary_search_for_n_clusters(
-    data,
-    approx_n_clusters,
-    *,
-    min_samples=5,
-):
-    numba_tree = build_kdtree(data.astype(np.float32))
-    edges = parallel_boruvka(numba_tree, min_samples=min_samples)
-    sorted_mst = edges[np.argsort(edges.T[2])]
-    uncondensed_tree = mst_to_linkage_tree(sorted_mst)
-
-    n_samples = data.shape[0]
-
-    leaves, clusters, strengths = _binary_search_for_n_clusters(
-        uncondensed_tree, approx_n_clusters, n_samples
-    )
-    return clusters, strengths
-
-
 def evoc_clusters(
     data,
     noise_level=0.5,
     base_min_cluster_size=5,
     base_n_clusters=None,
-    min_num_clusters=4,
     approx_n_clusters=None,
     n_neighbors=15,
     min_samples=5,
-    next_cluster_size_quantile=0.8,
     n_epochs=50,
     node_embedding_init="label_prop",
     symmetrize_graph=True,
@@ -248,6 +439,8 @@ def evoc_clusters(
     neighbor_scale=1.0,
     random_state=None,
     reproducible_flag=True,
+    min_similarity_threshold=0.2,
+    max_layers=10,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -278,11 +471,6 @@ def evoc_clusters(
         is only approximate, but usually the algorithm can manage to get this exact number,
         assuming a resonable clustering into ``base_n_clusters`` exists.
 
-    min_num_clusters : int, default=4
-        The minimum number of clusters in the least granular layer of the clustering.
-        Once a layer produces this many clusters or less no further layers will be
-        produced.
-
     approx_n_clusters : int, default=None
         If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters. Since the actual
@@ -298,11 +486,6 @@ def evoc_clusters(
     min_samples : int, default=5
         The minimum number of samples to use in the density estimation when
         performing density based clustering on the node embedding.
-
-    next_cluster_size_quantile : float, default=0.8
-        The quantile of cluster sizes to use when determining the minimum cluster
-        size for the next layer of clustering. This is used to determine the
-        granularity of clustering at each layer.
 
     n_epochs : int, default=50
         The number of epochs to use when training the node embedding.
@@ -330,6 +513,15 @@ def evoc_clusters(
     random_state : np.random.RandomState or None, default=None
         The random state to use for the random number generator. If None, the random
         number generator will not be seeded and will use the system time as the seed.
+
+    min_similarity_threshold : float, default=0.2
+        The minimum similarity threshold for cluster layer selection. Peaks that result
+        in clusterings with Jaccard similarity above this threshold will be filtered out
+        to ensure diverse cluster layers.
+
+    max_layers : int, default=10
+        The maximum number of cluster layers to return. The algorithm will select up to
+        this many diverse peaks based on persistence and similarity criteria.
 
     Returns
     -------
@@ -382,30 +574,35 @@ def evoc_clusters(
     if return_duplicates:
         duplicates = find_duplicates(nn_inds, nn_dists)
 
+    n_threads = numba.get_num_threads()
+
     if approx_n_clusters is not None:
         cluster_vector, strengths = binary_search_for_n_clusters(
             embedding,
             approx_n_clusters,
+            n_threads,
             min_samples=min_samples,
         )
         if return_duplicates:
-            return [cluster_vector], [strengths], duplicates
+            return [cluster_vector], [strengths], [0.0], duplicates
         else:
-            return [cluster_vector], [strengths]
+            return [cluster_vector], [strengths], [0.0]
     else:
-        cluster_layers, membership_strengths = build_cluster_layers(
+        cluster_layers, membership_strengths, persistence_scores = build_cluster_layers(
             embedding,
-            min_clusters=min_num_clusters,
             min_samples=min_samples,
             base_min_cluster_size=base_min_cluster_size,
             base_n_clusters=base_n_clusters,
-            next_cluster_size_quantile=next_cluster_size_quantile,
             reproducible_flag=reproducible_flag,
+            min_similarity_threshold=min_similarity_threshold,
+            max_layers=max_layers,
         )
+
+        
         if return_duplicates:
-            return cluster_layers, membership_strengths, duplicates
+            return cluster_layers, membership_strengths, persistence_scores, duplicates
         else:
-            return cluster_layers, membership_strengths
+            return cluster_layers, membership_strengths, persistence_scores
 
 
 class EVoC(BaseEstimator, ClusterMixin):
@@ -437,11 +634,6 @@ class EVoC(BaseEstimator, ClusterMixin):
         is only approximate, but usually the algorithm can manage to get this exact
         number, assuming a resonable clustering into ``base_n_clusters`` exists.
 
-    min_num_clusters : int, default=4
-        The minimum number of clusters in the least granular layer of the clustering.
-        Once a layer produces this many clusters or less no further layers will be
-        produced.
-
     approx_n_clusters : int, default=None
         If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters. Since the actual
@@ -457,11 +649,6 @@ class EVoC(BaseEstimator, ClusterMixin):
     min_samples : int, default=5
         The minimum number of samples to use in the density estimation when
         performing density based clustering on the node embedding.
-
-    next_cluster_size_quantile : float, default=0.8
-        The quantile of cluster sizes to use when determining the minimum cluster
-        size for the next layer of clustering. This is used to determine the
-        granularity of clustering at each layer.
 
     n_epochs : int, default=50
         The number of epochs to use when training the node embedding.
@@ -486,6 +673,15 @@ class EVoC(BaseEstimator, ClusterMixin):
     random_state : int or None, default=None
         The random seed to use for the random number generator. If None, the random
         number generator will not be seeded and will use the system time as the seed.
+
+    min_similarity_threshold : float, default=0.2
+        The minimum similarity threshold for cluster layer selection. Peaks that result
+        in clusterings with Jaccard similarity above this threshold will be filtered out
+        to ensure diverse cluster layers.
+
+    max_layers : int, default=10
+        The maximum number of cluster layers to return. The algorithm will select up to
+        this many diverse peaks based on persistence and similarity criteria.
 
     Attributes
     ----------
@@ -522,25 +718,24 @@ class EVoC(BaseEstimator, ClusterMixin):
         noise_level: float = 0.5,
         base_min_cluster_size: int = 5,
         base_n_clusters: int | None = None,
-        min_num_clusters: int = 4,
         approx_n_clusters: int | None = None,
         n_neighbors: int = 15,
         min_samples: int = 5,
-        next_cluster_size_quantile: float = 0.8,
+
         n_epochs: int = 50,
         node_embedding_init: str | None = "label_prop",
         symmetrize_graph: bool = True,
         node_embedding_dim: int | None = None,
         neighbor_scale: float = 1.0,
         random_state: int | None = None,
+        min_similarity_threshold: float = 0.2,
+        max_layers: int = 10,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
         self.base_min_cluster_size = base_min_cluster_size
         self.base_n_clusters = base_n_clusters
-        self.min_num_clusters = min_num_clusters
         self.approx_n_clusters = approx_n_clusters
-        self.next_cluster_size_quantile = next_cluster_size_quantile
         self.min_samples = min_samples
         self.n_epochs = n_epochs
         self.node_embedding_init = node_embedding_init
@@ -548,6 +743,8 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.node_embedding_dim = node_embedding_dim
         self.neighbor_scale = neighbor_scale
         self.random_state = random_state
+        self.min_similarity_threshold = min_similarity_threshold
+        self.max_layers = max_layers
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -579,16 +776,14 @@ class EVoC(BaseEstimator, ClusterMixin):
         X = check_array(X)
         current_random_state = check_random_state(self.random_state)
 
-        self.cluster_layers_, self.membership_strength_layers_, self.duplicates_ = (
+        self.cluster_layers_, self.membership_strength_layers_, self.persistence_scores_, self.duplicates_ = (
             evoc_clusters(
                 X,
                 n_neighbors=self.n_neighbors,
                 noise_level=self.noise_level,
                 base_min_cluster_size=self.base_min_cluster_size,
                 base_n_clusters=self.base_n_clusters,
-                min_num_clusters=self.min_num_clusters,
                 approx_n_clusters=self.approx_n_clusters,
-                next_cluster_size_quantile=self.next_cluster_size_quantile,
                 min_samples=self.min_samples,
                 n_epochs=self.n_epochs,
                 node_embedding_init=self.node_embedding_init,
@@ -598,6 +793,8 @@ class EVoC(BaseEstimator, ClusterMixin):
                 neighbor_scale=self.neighbor_scale,
                 random_state=current_random_state,
                 reproducible_flag=self.random_state is not None,
+                min_similarity_threshold=self.min_similarity_threshold,
+                max_layers=self.max_layers,
             )
         )
 
@@ -605,10 +802,7 @@ class EVoC(BaseEstimator, ClusterMixin):
             self.labels_ = self.cluster_layers_[0]
             self.membership_strengths_ = self.membership_strength_layers_[0]
         else:
-            n_points_clustered_per_layer = [
-                np.sum(layer >= 0) for layer in self.cluster_layers_
-            ]
-            best_layer = np.argmax(n_points_clustered_per_layer)
+            best_layer = np.argmax(self.persistence_scores_)
             self.labels_ = self.cluster_layers_[best_layer]
             self.membership_strengths_ = self.membership_strength_layers_[best_layer]
 
@@ -649,3 +843,4 @@ class EVoC(BaseEstimator, ClusterMixin):
             "Please call 'fit' with appropriate arguments before accessing this attribute.",
         )
         return build_cluster_tree(self.cluster_layers_)
+
