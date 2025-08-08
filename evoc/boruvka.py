@@ -255,6 +255,7 @@ def boruvka_tree_query(tree, node_components, point_components, core_distances):
 
     return candidate_distances, candidate_indices
 
+@numba.njit(inline='always', cache=True)
 def calculate_block_size(n_components, n_points, num_threads):
     """Calculate adaptive block size based on component sizes."""
     if n_components == 0:
@@ -401,8 +402,8 @@ def initialize_boruvka_from_knn(knn_indices, knn_distances, core_distances, disj
 
     return result[:result_idx]
 
-
-def parallel_boruvka(tree, min_samples=10, reproducible=False):
+@numba.njit(cache=True)
+def parallel_boruvka(tree, n_threads, min_samples=10, reproducible=False):
     components_disjoint_set = ds_rank_create(tree.data.shape[0])
     point_components = np.arange(tree.data.shape[0])
     node_components = np.full(tree.idx_start.shape[0], -1)
@@ -418,20 +419,18 @@ def parallel_boruvka(tree, min_samples=10, reproducible=False):
         distances, neighbors = parallel_tree_query(tree, tree.data, k=2, output_rdist=True)
         initial_edges = initialize_boruvka_from_knn(neighbors, distances, core_distances, components_disjoint_set)
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
-
-    # Get number of threads for block size calculation
-    num_threads = numba.get_num_threads()
     
     # Count initial components after initialization
     n_components = len(np.unique(point_components))
     
     # Use list to accumulate edges, then convert at end (more efficient than vstack)
-    all_edges = [initial_edges]
+    # all_edges = [initial_edges]
+    all_edges = initial_edges
 
     while n_components > 1:
         if reproducible:
             # Calculate adaptive block size based on current component sizes
-            block_size = calculate_block_size(n_components, tree.data.shape[0], num_threads)
+            block_size = calculate_block_size(n_components, tree.data.shape[0], n_threads)
             candidate_distances, candidate_indices = boruvka_tree_query_reproducible(
                 tree, node_components, point_components, core_distances, block_size)
         else:
@@ -446,10 +445,13 @@ def parallel_boruvka(tree, min_samples=10, reproducible=False):
         update_component_vectors(tree, components_disjoint_set, node_components, point_components)
 
         if len(new_edges) > 0:
-            all_edges.append(new_edges)
+            # all_edges.append(new_edges)
+            all_edges = np.vstack((all_edges, new_edges))
 
     # Combine all edges at once (more efficient than repeated vstack)
-    edges = np.vstack(all_edges)
-    edges[:, 2] = np.sqrt(edges.T[2])
-    return edges
+    # edges = np.vstack(all_edges)
+    # edges[:, 2] = np.sqrt(edges.T[2])
+    # return edges
+    all_edges[:, 2] = np.sqrt(all_edges.T[2])
+    return all_edges
 
