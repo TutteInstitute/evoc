@@ -22,6 +22,7 @@ from evoc.clustering import (
     evoc_clusters,
     EVoC,
 )
+import numba
 from evoc.numba_kdtree import build_kdtree
 from evoc.boruvka import parallel_boruvka
 from evoc.cluster_trees import mst_to_linkage_tree
@@ -101,7 +102,8 @@ def small_linkage_tree():
     # Normalize to unit sphere like embeddings
     X = X / np.linalg.norm(X, axis=1, keepdims=True)
     numba_tree = build_kdtree(X.astype(np.float32))
-    edges = parallel_boruvka(numba_tree, min_samples=3)
+    num_threads = numba.get_num_threads()
+    edges = parallel_boruvka(numba_tree, num_threads, min_samples=3)
     sorted_mst = edges[np.argsort(edges.T[2])]
     return mst_to_linkage_tree(sorted_mst)
 
@@ -153,9 +155,10 @@ class TestBinarySearchForNClusters:
     def test_binary_search_wrapper_function(self, simple_embedding_data):
         """Test the wrapper binary_search_for_n_clusters function."""
         X, y_true = simple_embedding_data
+        num_threads = numba.get_num_threads()
         
         clusters, strengths = binary_search_for_n_clusters(
-            X, approx_n_clusters=3, min_samples=5
+            X, approx_n_clusters=3, n_threads=num_threads, min_samples=5
         )
         
         # Check return types and shapes
@@ -177,12 +180,10 @@ class TestBuildClusterLayers:
         """Test basic cluster layer building."""
         X, y_true = simple_embedding_data
         
-        cluster_layers, membership_strengths = build_cluster_layers(
+        cluster_layers, membership_strengths, persistence_scores = build_cluster_layers(
             X,
-            min_clusters=2,
             min_samples=5,
             base_min_cluster_size=10,
-            next_cluster_size_quantile=0.8
         )
         
         # Check return types
@@ -201,12 +202,10 @@ class TestBuildClusterLayers:
         """Test cluster layer building with specified base cluster count."""
         X, y_true = simple_embedding_data
         
-        cluster_layers, membership_strengths = build_cluster_layers(
+        cluster_layers, membership_strengths, persistence_scores = build_cluster_layers(
             X,
-            min_clusters=2,
             base_n_clusters=3,
             min_samples=5,
-            next_cluster_size_quantile=0.8
         )
         
         assert len(cluster_layers) > 0
@@ -221,16 +220,14 @@ class TestBuildClusterLayers:
         """Test that cluster layer building is reproducible."""
         X, y_true = simple_embedding_data
         
-        layers1, strengths1 = build_cluster_layers(
+        layers1, strengths1, persistence1 = build_cluster_layers(
             X,
-            min_clusters=2,
             base_min_cluster_size=10,
             reproducible_flag=True
         )
         
-        layers2, strengths2 = build_cluster_layers(
+        layers2, strengths2, persistence2 = build_cluster_layers(
             X,
-            min_clusters=2,
             base_min_cluster_size=10,
             reproducible_flag=True
         )
@@ -344,11 +341,11 @@ class TestEvocClusters:
         """Test basic EVoC clustering."""
         X, y_true = simple_embedding_data
         
-        cluster_layers, membership_strengths = evoc_clusters(
+        cluster_layers, membership_strengths, persistence_scores = evoc_clusters(
             X,
             noise_level=0.5,
             base_min_cluster_size=5,
-            min_num_clusters=2,
+            base_n_clusters=2,
             n_neighbors=10,
             min_samples=3,
             n_epochs=20,
@@ -370,7 +367,7 @@ class TestEvocClusters:
         """Test EVoC clustering with specified cluster count."""
         X, y_true = simple_embedding_data
         
-        cluster_layers, membership_strengths = evoc_clusters(
+        cluster_layers, membership_strengths, persistence_scores = evoc_clusters(
             X,
             approx_n_clusters=3,
             n_neighbors=10,
@@ -392,7 +389,7 @@ class TestEvocClusters:
         """Test EVoC clustering with duplicate detection."""
         X, y_true = duplicate_embedding_data
         
-        cluster_layers, membership_strengths, duplicates = evoc_clusters(
+        cluster_layers, membership_strengths, persistence_scores, duplicates = evoc_clusters(
             X,
             return_duplicates=True,
             n_neighbors=10,
@@ -415,7 +412,7 @@ class TestEvocClusters:
         # Normalize like real embeddings
         X_float = X_float / np.linalg.norm(X_float, axis=1, keepdims=True)
         
-        clusters, strengths = evoc_clusters(
+        clusters, strengths, persistence_scores = evoc_clusters(
             X_float,
             approx_n_clusters=4,
             n_epochs=10,
@@ -426,7 +423,7 @@ class TestEvocClusters:
         
         # Test with int8 data (quantized embeddings)
         X_int8, _ = quantized_embedding_data
-        clusters, strengths = evoc_clusters(
+        clusters, strengths, persistence_scores = evoc_clusters(
             X_int8,
             approx_n_clusters=3,
             n_epochs=10,
@@ -437,7 +434,7 @@ class TestEvocClusters:
         
         # Test with uint8 data (binary embeddings)
         X_uint8, _ = binary_embedding_data
-        clusters, strengths = evoc_clusters(
+        clusters, strengths, persistence_scores = evoc_clusters(
             X_uint8,
             approx_n_clusters=3,
             n_epochs=10,

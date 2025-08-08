@@ -7,6 +7,7 @@ construction, including component merging, tree queries, and parallel processing
 
 import numpy as np
 import pytest
+import numba
 from sklearn.datasets import make_blobs
 from sklearn.preprocessing import StandardScaler
 
@@ -422,10 +423,11 @@ class TestParallelBoruvka:
     def test_parallel_boruvka_basic(self, boruvka_test_data):
         """Test basic Boruvka algorithm execution."""
         tree, data = boruvka_test_data
+        num_threads = numba.get_num_threads()
         
         # Run Boruvka with different min_samples
         for min_samples in [1, 3, 5]:
-            edges = parallel_boruvka(tree, min_samples=min_samples)
+            edges = parallel_boruvka(tree, num_threads, min_samples=min_samples)
             
             # Should produce a valid MST
             assert edges.shape[0] == data.shape[0] - 1  # n-1 edges for MST
@@ -443,11 +445,12 @@ class TestParallelBoruvka:
     def test_parallel_boruvka_reproducible(self, boruvka_test_data):
         """Test that reproducible Boruvka gives consistent results."""
         tree, data = boruvka_test_data
+        num_threads = numba.get_num_threads()
         
         # Run multiple times
         results = []
         for _ in range(3):
-            edges = parallel_boruvka(tree, min_samples=3, reproducible=True)
+            edges = parallel_boruvka(tree, num_threads, min_samples=3, reproducible=True)
             # Sort edges for comparison (edge order may vary)
             sorted_edges = edges[np.lexsort((edges[:, 1], edges[:, 0]))]
             results.append(sorted_edges)
@@ -459,9 +462,10 @@ class TestParallelBoruvka:
     def test_parallel_boruvka_vs_non_reproducible(self, boruvka_test_data):
         """Test that reproducible and non-reproducible versions give equivalent MST weights."""
         tree, data = boruvka_test_data
+        num_threads = numba.get_num_threads()
         
-        edges_normal = parallel_boruvka(tree, min_samples=3, reproducible=False)
-        edges_repro = parallel_boruvka(tree, min_samples=3, reproducible=True)
+        edges_normal = parallel_boruvka(tree, num_threads, min_samples=3, reproducible=False)
+        edges_repro = parallel_boruvka(tree, num_threads, min_samples=3, reproducible=True)
         
         # Both should have same number of edges
         assert edges_normal.shape[0] == edges_repro.shape[0]
@@ -475,8 +479,9 @@ class TestParallelBoruvka:
         """Test Boruvka with single point (edge case)."""
         data = np.array([[0.0, 0.0]], dtype=np.float32)
         tree = build_kdtree(data, leaf_size=1)
+        num_threads = numba.get_num_threads()
         
-        edges = parallel_boruvka(tree, min_samples=1)
+        edges = parallel_boruvka(tree, num_threads, min_samples=1)
         
         # Single point should produce empty MST
         assert edges.shape[0] == 0
@@ -485,8 +490,9 @@ class TestParallelBoruvka:
         """Test Boruvka with two points."""
         data = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
         tree = build_kdtree(data, leaf_size=1)
+        num_threads = numba.get_num_threads()
         
-        edges = parallel_boruvka(tree, min_samples=1)
+        edges = parallel_boruvka(tree, num_threads, min_samples=1)
         
         # Two points should produce single edge
         assert edges.shape[0] == 1
@@ -503,10 +509,11 @@ class TestParallelBoruvka:
     def test_parallel_boruvka_different_min_samples(self, boruvka_test_data):
         """Test Boruvka with different min_samples values."""
         tree, data = boruvka_test_data
+        num_threads = numba.get_num_threads()
         
         results = {}
         for min_samples in [1, 2, 3, 5]:
-            edges = parallel_boruvka(tree, min_samples=min_samples)
+            edges = parallel_boruvka(tree, num_threads, min_samples=min_samples)
             results[min_samples] = edges
             
             # All should produce valid MST
@@ -520,6 +527,38 @@ class TestParallelBoruvka:
         assert all(w > 0 for w in weights)
         weight_ratio = max(weights) / min(weights)
         assert weight_ratio < 10.0  # Different min_samples can produce quite different trees
+    
+    def test_parallel_boruvka_different_num_threads(self, boruvka_test_data):
+        """Test Boruvka with different num_threads values."""
+        tree, data = boruvka_test_data
+        
+        # Test different numbers of threads
+        thread_counts = [1, 2, 4, 8]
+        results = {}
+        
+        for num_threads in thread_counts:
+            edges = parallel_boruvka(tree, num_threads, min_samples=3, reproducible=True)
+            results[num_threads] = edges
+            
+            # All should produce valid MST
+            assert edges.shape[0] == data.shape[0] - 1
+            assert edges.shape[1] == 3
+            assert np.all(edges[:, 2] > 0)
+        
+        # All results should be identical when using reproducible=True
+        # (since the algorithm should be deterministic regardless of thread count)
+        sorted_results = {}
+        for num_threads, edges in results.items():
+            sorted_edges = edges[np.lexsort((edges[:, 1], edges[:, 0]))]
+            sorted_results[num_threads] = sorted_edges
+        
+        # Compare all results to the first one
+        base_result = sorted_results[thread_counts[0]]
+        for num_threads in thread_counts[1:]:
+            np.testing.assert_array_almost_equal(
+                base_result, sorted_results[num_threads], decimal=5,
+                err_msg=f"Results differ between 1 thread and {num_threads} threads"
+            )
 
 
 class TestEdgeCases:
@@ -543,8 +582,9 @@ class TestEdgeCases:
         """Test with 1D data."""
         data = np.array([[0.0], [1.0], [2.0]], dtype=np.float32)
         tree = build_kdtree(data, leaf_size=2)
+        num_threads = numba.get_num_threads()
         
-        edges = parallel_boruvka(tree, min_samples=1)
+        edges = parallel_boruvka(tree, num_threads, min_samples=1)
         
         # Should produce valid MST for 1D data
         assert edges.shape[0] == 2  # 3 points -> 2 edges
@@ -555,8 +595,9 @@ class TestEdgeCases:
         np.random.seed(42)
         data = np.random.random((20, 10)).astype(np.float32)  # 20 points in 10D
         tree = build_kdtree(data, leaf_size=5)
+        num_threads = numba.get_num_threads()
         
-        edges = parallel_boruvka(tree, min_samples=2)
+        edges = parallel_boruvka(tree, num_threads, min_samples=2)
         
         # Should handle high-dimensional data
         assert edges.shape[0] == 19  # n-1 edges

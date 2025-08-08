@@ -7,6 +7,7 @@ partitioning and query results compared to sklearn's KDTree implementation.
 
 import numpy as np
 import pytest
+import numba
 from sklearn.neighbors import KDTree as SklearnKDTree
 
 from evoc.numba_kdtree import build_kdtree
@@ -305,9 +306,10 @@ def test_full_pipeline_compatibility():
     from evoc.boruvka import parallel_boruvka
     
     tree = build_kdtree(data, leaf_size=20)
+    num_threads = numba.get_num_threads()
     
     # This should not raise any numba errors
-    edges = parallel_boruvka(tree, min_samples=5, reproducible=True)
+    edges = parallel_boruvka(tree, n_threads=num_threads, min_samples=5, reproducible=True)
     
     # Should produce reasonable results
     assert len(edges) > 0, "Boruvka should produce some edges"
