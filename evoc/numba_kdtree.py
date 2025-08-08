@@ -369,7 +369,6 @@ def _recursive_build_tree(
 
     return
 
-@numba.njit(cache=True)
 def build_kdtree(data, leaf_size=40):
         n_samples = data.shape[0]
         n_features = data.shape[1]
