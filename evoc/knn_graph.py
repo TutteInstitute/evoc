@@ -156,12 +156,16 @@ def knn_graph(
         _input_dtype = np.int8
         _bit_trees = False
     else:
-        # Efficiently create a modifiable float32 C-contiguous copy
-        data = np.array(data, dtype=np.float32, order='C', copy=True)
         norms = np.einsum("ij,ij->i", data, data)
         np.sqrt(norms, norms)
         norms[norms == 0.0] = 1.0
-        data /= norms[:, np.newaxis]
+        if np.allclose(norms, 1.0):
+            # Data is already normalized, just ensure C-contiguity and float32
+            data = np.ascontiguousarray(data, dtype=np.float32)
+        else:
+            # Efficiently create a modifiable float32 C-contiguous copy
+            data = np.array(data, dtype=np.float32, order='C', copy=True)
+            data /= norms[:, np.newaxis]
         _input_dtype = np.float32
         _bit_trees = False
 
