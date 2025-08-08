@@ -13,14 +13,16 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 
 from evoc.clustering import (
-    _binary_search_for_n_clusters,
     build_cluster_layers,
+    evoc_clusters,
+    EVoC,
+)
+from evoc.clustering_utilities import (
+    _binary_search_for_n_clusters,
     find_duplicates,
     _build_cluster_tree,
     build_cluster_tree,
     binary_search_for_n_clusters,
-    evoc_clusters,
-    EVoC,
 )
 import numba
 from evoc.numba_kdtree import build_kdtree
