@@ -143,6 +143,12 @@ def evoc_clusters(
     reproducible_flag=True,
     min_similarity_threshold=0.2,
     max_layers=10,
+    recursive_init=True,
+    base_init="pca",
+    base_init_threshold=64,
+    original_label_propagation=False,
+    upscaling="partition_expander",
+    n_init_iter=20,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -252,11 +258,18 @@ def evoc_clusters(
         init_embedding = label_propagation_init(
             graph,
             n_components=n_embedding_components,
-            approx_n_parts=np.clip(int(np.sqrt(data.shape[0])), 100, 1024),
+            approx_n_parts=np.clip(int(np.sqrt(data.shape[0])), 512, 4096),
             random_scale=0.1,
             scaling=0.5,
             noise_level=noise_level,
             random_state=random_state,
+            data=data,
+            recursive_init=recursive_init,
+            base_init=base_init,
+            base_init_threshold=base_init_threshold,
+            original_label_propagation=original_label_propagation,
+            upscaling=upscaling,
+            n_iter=n_init_iter,
         )
     elif node_embedding_init is None:
         init_embedding = None
@@ -432,6 +445,13 @@ class EVoC(BaseEstimator, ClusterMixin):
         random_state: int | None = None,
         min_similarity_threshold: float = 0.2,
         max_layers: int = 10,
+
+        recursive_init=True,
+        base_init="pca",
+        base_init_threshold=64,
+        original_label_propagation=False,
+        upscaling="partition_expander",
+        n_init_iter=20,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
@@ -447,6 +467,13 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.random_state = random_state
         self.min_similarity_threshold = min_similarity_threshold
         self.max_layers = max_layers
+
+        self.recursive_init = recursive_init
+        self.base_init = base_init
+        self.base_init_threshold = base_init_threshold
+        self.original_label_propagation = original_label_propagation
+        self.upscaling = upscaling
+        self.n_init_iter = n_init_iter
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -497,6 +524,13 @@ class EVoC(BaseEstimator, ClusterMixin):
                 reproducible_flag=self.random_state is not None,
                 min_similarity_threshold=self.min_similarity_threshold,
                 max_layers=self.max_layers,
+
+                recursive_init=self.recursive_init,
+                base_init=self.base_init,
+                base_init_threshold=self.base_init_threshold,
+                original_label_propagation=self.original_label_propagation,
+                upscaling=self.upscaling,
+                n_init_iter=self.n_init_iter,
             )
         )
 
