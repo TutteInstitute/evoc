@@ -116,7 +116,7 @@ def label_outliers(indptr, indices, labels, rng_state):
             unlabelled = True
             n_iter = 0
 
-            while unlabelled and n_iter < 100:
+            while unlabelled and n_iter < 64:
 
                 n_iter += 1
                 current_node = node_queue.pop()
@@ -158,7 +158,7 @@ def label_prop_loop(
     indptr, indices, data, labels, random_state, n_iter=20, approx_n_parts=2048
 ):
     rng_state = random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
-    for i in range(int(1.25 * approx_n_parts)):  # range(int(1.25 * approx_n_parts)):
+    for i in range(approx_n_parts):  # range(int(1.25 * approx_n_parts)):
         labels[random_state.randint(labels.shape[0])] = i
 
     for i in range(n_iter):
@@ -191,7 +191,8 @@ import matplotlib.pyplot as plt
 
 def label_propagation_init(
     graph,
-    n_iter=20,
+    n_label_prop_iter=20,
+    n_embedding_epochs=50,
     approx_n_parts=512,
     n_components=2,
     scaling=0.1,
@@ -202,14 +203,10 @@ def label_propagation_init(
     recursive_init=True,
     base_init="pca",
     base_init_threshold=64,
-    original_label_propagation=False,
     upscaling="partition_expander",
 ):
     if random_state is None:
         random_state = np.random.RandomState()
-
-    # if recursive_init:
-    #     approx_n_parts = graph.shape[0] // 4
 
     if graph.shape[0] < base_init_threshold:
         if base_init == "random":
@@ -257,26 +254,15 @@ def label_propagation_init(
             )
 
     labels = np.full(graph.shape[0], -1, dtype=np.int64)
-    if original_label_propagation:
-        partition = original_label_prop_loop(
-            graph.indptr,
-            graph.indices,
-            graph.data,
-            labels,
-            random_state,
-            n_iter,
-            approx_n_parts,
-        )
-    else:
-        partition = label_prop_loop(
-            graph.indptr,
-            graph.indices,
-            graph.data,
-            labels,
-            random_state,
-            n_iter,
-            approx_n_parts,
-        )
+    partition = label_prop_loop(
+        graph.indptr,
+        graph.indices,
+        graph.data,
+        labels,
+        random_state,
+        n_label_prop_iter,
+        approx_n_parts,
+    )
     base_reduction_map = csr_matrix(
         (np.ones(partition.shape[0]), partition, np.arange(partition.shape[0] + 1)),
         shape=(partition.shape[0], partition.max() + 1),
@@ -294,7 +280,8 @@ def label_propagation_init(
     if recursive_init:
         reduced_init = label_propagation_init(
             reduced_graph,
-            n_iter=min(255, n_iter * 2),
+            n_label_prop_iter=n_label_prop_iter,
+            n_embedding_epochs=min(255, n_embedding_epochs),
             approx_n_parts=approx_n_parts // 4,
             n_components=n_components,
             scaling=scaling,
@@ -303,7 +290,6 @@ def label_propagation_init(
             random_state=random_state,
             data=reduced_data,
             recursive_init=True,
-            original_label_propagation=original_label_propagation,
             upscaling=upscaling,
             base_init=base_init,
             base_init_threshold=base_init_threshold,
@@ -314,12 +300,12 @@ def label_propagation_init(
     reduced_layout = node_embedding(
         reduced_graph,
         n_components,
-        n_iter,
+        n_embedding_epochs,
         verbose=False,
         noise_level=noise_level,
         random_state=random_state,
         initial_embedding=reduced_init,
-        initial_alpha=0.001 * n_iter,
+        initial_alpha=0.001 * n_embedding_epochs,
     )
 
     if upscaling == "partition_expander":
@@ -350,6 +336,4 @@ def label_propagation_init(
         )
 
     result = (scaling * (result - result.mean(axis=0))).astype(np.float32)
-    # plt.scatter(result[:, 0], result[:, 1], c=partition, s=1)
-    # plt.show()
     return result
