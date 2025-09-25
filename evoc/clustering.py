@@ -184,18 +184,22 @@ def evoc_clusters(
     base_n_clusters : int, default=None
         If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters for the bottom-most layer
-        of clustering. Since the actual number of clusters cannot be guaranteed this
-        is only approximate, but usually the algorithm can manage to get this exact number,
-        assuming a resonable clustering into ``base_n_clusters`` exists.
+        of clustering. This affects the base layer computation and allows multiple
+        layers to be built on top of this base. Since the actual number of clusters
+        cannot be guaranteed this is only approximate, but usually the algorithm can
+        manage to get this exact number, assuming a reasonable clustering into
+        ``base_n_clusters`` exists.
 
     approx_n_clusters : int, default=None
         If not None, the algorithm will attempt to find the granularity of
-        clustering that will give exactly this many clusters. Since the actual
-        number of clusters cannot be guaranteed this is only approximate, but
-        usually the algorithm can manage to get this exact number, assuming a
-        resonable clustering into ``approx_n_clusters`` exists. When not None
-        only this granularity will be returned -- no other cluster layers
-        will be produced.
+        clustering that will give exactly this many clusters as the final output.
+        Unlike ``base_n_clusters``, when this parameter is set, only a single
+        clustering layer will be returned -- no hierarchical layers will be produced.
+        This is useful when you know the exact number of clusters you want and don't
+        need the multi-layer analysis. Since the actual number of clusters cannot be
+        guaranteed this is only approximate, but usually the algorithm can manage to
+        get this exact number, assuming a reasonable clustering into ``approx_n_clusters``
+        exists.
 
     n_neighbors : int, default=15
         The number of neighbors to use in the nearest neighbor graph construction.
@@ -220,16 +224,24 @@ def evoc_clusters(
 
     node_embedding_dim : int or None, default=None
         The number of dimensions to use in the node embedding. If None, a default
-        value of min(n_neighbors, 15) will be used.
+        value of min(max(n_neighbors // 4, 4), 15) will be used.
 
     neighbor_scale : float, default=1.0
         The scale factor to use when constructing the nearest neighbor graph. This
-        can be used to increase the number of neighbors used in the graph construction
-        by scaling the number of neighbors by this factor.
+        multiplies the effective number of neighbors used in graph construction
+        (neighbor_scale * n_neighbors). Values > 1.0 create denser graphs with more
+        connectivity, potentially capturing more global structure but at increased
+        computational cost. Values < 1.0 create sparser graphs focused on local
+        structure.
 
     random_state : np.random.RandomState or None, default=None
         The random state to use for the random number generator. If None, the random
         number generator will not be seeded and will use the system time as the seed.
+
+    reproducible_flag : bool, default=True
+        Whether to ensure reproducible results by using deterministic algorithms
+        where possible. When True, the clustering results should be consistent
+        across runs with the same random_state.
 
     min_similarity_threshold : float, default=0.2
         The minimum similarity threshold for cluster layer selection. Peaks that result
@@ -355,18 +367,22 @@ class EVoC(BaseEstimator, ClusterMixin):
     base_n_clusters : int or None, default=None
         If not None, the algorithm will attempt to find the granularity of
         clustering that will give exactly this many clusters for the bottom-most layer
-        of clustering. Since the actual number of clusters cannot be guaranteed this
-        is only approximate, but usually the algorithm can manage to get this exact
-        number, assuming a resonable clustering into ``base_n_clusters`` exists.
+        of clustering. This affects the base layer computation and allows multiple
+        layers to be built on top of this base. Since the actual number of clusters
+        cannot be guaranteed this is only approximate, but usually the algorithm can
+        manage to get this exact number, assuming a reasonable clustering into
+        ``base_n_clusters`` exists.
 
     approx_n_clusters : int, default=None
         If not None, the algorithm will attempt to find the granularity of
-        clustering that will give exactly this many clusters. Since the actual
-        number of clusters cannot be guaranteed this is only approximate, but
-        usually the algorithm can manage to get this exact number, assuming a
-        resonable clustering into ``approx_n_clusters`` exists. When not None
-        only this granularity will be returned -- no other cluster layers
-        will be produced.
+        clustering that will give exactly this many clusters as the final output.
+        Unlike ``base_n_clusters``, when this parameter is set, only a single
+        clustering layer will be returned -- no hierarchical layers will be produced.
+        This is useful when you know the exact number of clusters you want and don't
+        need the multi-layer analysis. Since the actual number of clusters cannot be
+        guaranteed this is only approximate, but usually the algorithm can manage to
+        get this exact number, assuming a reasonable clustering into ``approx_n_clusters``
+        exists.
 
     n_neighbors : int, default=15
         The number of neighbors to use in the nearest neighbor graph construction.
@@ -388,12 +404,15 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     node_embedding_dim : int or None, default=None
         The number of dimensions to use in the node embedding. If None, a default
-        value of min(n_neighbors, 15) will be used.
+        value of min(max(n_neighbors // 4, 4), 15) will be used.
 
     neighbor_scale : float, default=1.0
         The scale factor to use when constructing the nearest neighbor graph. This
-        can be used to increase the number of neighbors used in the graph construction
-        by scaling the number of neighbors by this factor.
+        multiplies the effective number of neighbors used in graph construction
+        (neighbor_scale * n_neighbors). Values > 1.0 create denser graphs with more
+        connectivity, potentially capturing more global structure but at increased
+        computational cost. Values < 1.0 create sparser graphs focused on local
+        structure.
 
     random_state : int or None, default=None
         The random seed to use for the random number generator. If None, the random
@@ -410,7 +429,9 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     n_label_prop_iter : int, default=20
         The number of iterations to use in the label propagation algorithm when
-        initializing the node embedding.
+        initializing the node embedding. This parameter controls how many steps
+        the label propagation process takes to converge when node_embedding_init
+        is set to 'label_prop'.
 
     Attributes
     ----------
@@ -576,4 +597,6 @@ class EVoC(BaseEstimator, ClusterMixin):
             msg="This %(name)s instance is not fitted yet, and 'cluster_tree_' is not available. "
             "Please call 'fit' with appropriate arguments before accessing this attribute.",
         )
-        return build_cluster_tree(self.cluster_layers_)
+        if not hasattr(self, "_cluster_tree"):
+            self._cluster_tree = build_cluster_tree(self.cluster_layers_)
+        return self._cluster_tree
