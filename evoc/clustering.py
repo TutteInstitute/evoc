@@ -591,6 +591,27 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     @property
     def cluster_tree_(self):
+        """dict
+        A dictionary representing the hierarchical clustering of the data.
+
+        The keys are tuples of (layer, cluster) and the values are lists of
+        tuples of (layer, cluster) representing the children of the key cluster.
+        This provides a tree structure showing how clusters at different layers
+        relate to each other hierarchically.
+
+        Only available after fitting the model.
+
+        Returns
+        -------
+        dict
+            Hierarchical tree structure with (layer, cluster) tuples as keys
+            and lists of child (layer, cluster) tuples as values.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has not been fitted yet.
+        """
         check_is_fitted(
             self,
             "cluster_layers_",
