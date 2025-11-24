@@ -52,7 +52,10 @@ def build_cluster_layers(
 
     numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(
-        numba_tree, n_threads, min_samples=min_cluster_size if min_samples is None else min_samples, reproducible=reproducible_flag
+        numba_tree,
+        n_threads,
+        min_samples=min_cluster_size if min_samples is None else min_samples,
+        reproducible=reproducible_flag,
     )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
@@ -71,16 +74,22 @@ def build_cluster_layers(
         condensed_tree = condense_tree(uncondensed_tree, base_min_cluster_size)
         leaves = extract_leaves(condensed_tree)
         clusters = get_cluster_label_vector(condensed_tree, leaves, 0.0, n_samples)
-        strengths = get_point_membership_strength_vector(condensed_tree, leaves, clusters)
+        strengths = get_point_membership_strength_vector(
+            condensed_tree, leaves, clusters
+        )
 
     mask = condensed_tree.child >= n_samples
     cluster_tree = mask_condensed_tree(condensed_tree, mask)
     # points_tree = mask_condensed_tree(condensed_tree, ~mask)
-    
+
     # Check if cluster_tree is valid before processing
     if len(cluster_tree.child) > 0 and cluster_tree.child[-1] >= n_samples:
-        births, deaths, parents, lambda_deaths = min_cluster_size_barcode(cluster_tree, n_samples, min_cluster_size)
-        sizes, total_persistence = compute_total_persistence(births, deaths, lambda_deaths)
+        births, deaths, parents, lambda_deaths = min_cluster_size_barcode(
+            cluster_tree, n_samples, min_cluster_size
+        )
+        sizes, total_persistence = compute_total_persistence(
+            births, deaths, lambda_deaths
+        )
         peaks = find_peaks(total_persistence)
     else:
         # Handle empty or invalid cluster tree
@@ -91,19 +100,23 @@ def build_cluster_layers(
         sizes = np.array([])
         total_persistence = np.array([])
         peaks = np.array([], dtype=np.int64)
-    
+
     # Always include the base layer (from initial condensed tree)
     cluster_layers.append(clusters)
     membership_strength_layers.append(strengths)
     persistence_scores.append(0.0)  # Base layer gets 0 persistence score
-    
+
     # Select diverse peaks using hierarchical selection
     selected_peaks = select_diverse_peaks(
-        peaks, total_persistence, sizes, births, deaths,
-        min_similarity_threshold=min_similarity_threshold, 
-        max_layers=max_layers - 1  # Reserve one slot for base layer
+        peaks,
+        total_persistence,
+        sizes,
+        births,
+        deaths,
+        min_similarity_threshold=min_similarity_threshold,
+        max_layers=max_layers - 1,  # Reserve one slot for base layer
     )
-    
+
     for peak in selected_peaks:
         best_birth = sizes[peak]
         persistence = total_persistence[peak]
@@ -118,12 +131,13 @@ def build_cluster_layers(
     # Sort cluster layers by number of clusters (most clusters first)
     n_clusters_per_layer = [layer.max() + 1 for layer in cluster_layers]
     sorted_indices = np.argsort(n_clusters_per_layer)[::-1]  # Descending order
-    
+
     cluster_layers = [cluster_layers[i] for i in sorted_indices]
-    membership_strength_layers = [membership_strength_layers[i] for i in sorted_indices] 
+    membership_strength_layers = [membership_strength_layers[i] for i in sorted_indices]
     persistence_scores = [persistence_scores[i] for i in sorted_indices]
 
     return cluster_layers, membership_strength_layers, persistence_scores
+
 
 def evoc_clusters(
     data,
@@ -143,6 +157,7 @@ def evoc_clusters(
     reproducible_flag=True,
     min_similarity_threshold=0.2,
     max_layers=10,
+    duplicate_distance=None,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -225,6 +240,11 @@ def evoc_clusters(
         The maximum number of cluster layers to return. The algorithm will select up to
         this many diverse peaks based on persistence and similarity criteria.
 
+    duplicate_distance : float, default=None
+        The distance threshold for considering two points as duplicates. If not None,
+        points with a distance less than this threshold will be considered duplicates
+        during the duplicate detection step.
+
     Returns
     -------
 
@@ -243,7 +263,9 @@ def evoc_clusters(
     if random_state is None:
         random_state = np.random.RandomState()
 
-    nn_inds, nn_dists = knn_graph(data, n_neighbors=n_neighbors, random_state=random_state)
+    nn_inds, nn_dists = knn_graph(
+        data, n_neighbors=n_neighbors, random_state=random_state
+    )
     graph = neighbor_graph_matrix(
         neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
     )
@@ -274,7 +296,9 @@ def evoc_clusters(
     )
 
     if return_duplicates:
-        duplicates = find_duplicates(nn_inds, nn_dists)
+        duplicates = find_duplicates(
+            nn_inds, nn_dists, duplicate_distance=duplicate_distance
+        )
 
     n_threads = numba.get_num_threads()
 
@@ -300,7 +324,6 @@ def evoc_clusters(
             max_layers=max_layers,
         )
 
-        
         if return_duplicates:
             return cluster_layers, membership_strengths, persistence_scores, duplicates
         else:
@@ -385,6 +408,11 @@ class EVoC(BaseEstimator, ClusterMixin):
         The maximum number of cluster layers to return. The algorithm will select up to
         this many diverse peaks based on persistence and similarity criteria.
 
+    duplicate_distance : float, default=None
+        The distance threshold for considering two points as duplicates. If not None,
+        points with a distance less than this threshold will be considered duplicates
+        during the duplicate detection step.
+
     Attributes
     ----------
 
@@ -423,7 +451,6 @@ class EVoC(BaseEstimator, ClusterMixin):
         approx_n_clusters: int | None = None,
         n_neighbors: int = 15,
         min_samples: int = 5,
-
         n_epochs: int = 50,
         node_embedding_init: str | None = "label_prop",
         symmetrize_graph: bool = True,
@@ -432,6 +459,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         random_state: int | None = None,
         min_similarity_threshold: float = 0.2,
         max_layers: int = 10,
+        duplicate_distance: float | None = None,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
@@ -447,6 +475,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.random_state = random_state
         self.min_similarity_threshold = min_similarity_threshold
         self.max_layers = max_layers
+        self.duplicate_distance = duplicate_distance
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -478,26 +507,30 @@ class EVoC(BaseEstimator, ClusterMixin):
         X = check_array(X)
         current_random_state = check_random_state(self.random_state)
 
-        self.cluster_layers_, self.membership_strength_layers_, self.persistence_scores_, self.duplicates_ = (
-            evoc_clusters(
-                X,
-                n_neighbors=self.n_neighbors,
-                noise_level=self.noise_level,
-                base_min_cluster_size=self.base_min_cluster_size,
-                base_n_clusters=self.base_n_clusters,
-                approx_n_clusters=self.approx_n_clusters,
-                min_samples=self.min_samples,
-                n_epochs=self.n_epochs,
-                node_embedding_init=self.node_embedding_init,
-                symmetrize_graph=self.symmetrize_graph,
-                return_duplicates=True,
-                node_embedding_dim=self.node_embedding_dim,
-                neighbor_scale=self.neighbor_scale,
-                random_state=current_random_state,
-                reproducible_flag=self.random_state is not None,
-                min_similarity_threshold=self.min_similarity_threshold,
-                max_layers=self.max_layers,
-            )
+        (
+            self.cluster_layers_,
+            self.membership_strength_layers_,
+            self.persistence_scores_,
+            self.duplicates_,
+        ) = evoc_clusters(
+            X,
+            n_neighbors=self.n_neighbors,
+            noise_level=self.noise_level,
+            base_min_cluster_size=self.base_min_cluster_size,
+            base_n_clusters=self.base_n_clusters,
+            approx_n_clusters=self.approx_n_clusters,
+            min_samples=self.min_samples,
+            n_epochs=self.n_epochs,
+            node_embedding_init=self.node_embedding_init,
+            symmetrize_graph=self.symmetrize_graph,
+            return_duplicates=True,
+            node_embedding_dim=self.node_embedding_dim,
+            neighbor_scale=self.neighbor_scale,
+            random_state=current_random_state,
+            reproducible_flag=self.random_state is not None,
+            min_similarity_threshold=self.min_similarity_threshold,
+            max_layers=self.max_layers,
+            duplicate_distance=self.duplicate_distance,
         )
 
         if len(self.cluster_layers_) == 1:
@@ -545,4 +578,3 @@ class EVoC(BaseEstimator, ClusterMixin):
             "Please call 'fit' with appropriate arguments before accessing this attribute.",
         )
         return build_cluster_tree(self.cluster_layers_)
-

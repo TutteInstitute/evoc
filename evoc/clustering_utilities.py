@@ -11,12 +11,13 @@ from .cluster_trees import (
     get_point_membership_strength_vector,
 )
 
+
 ##############################################################
 # Directly derived from scipy's find_peaks function:
 # https://github.com/scipy/scipy/blob/bd66693b8aecc6f528ca9b1cfd6bb1f61477ca0f/scipy/signal/_peak_finding_utils.pyx#L20
 ##############################################################
 @numba.njit(
-    ['intp[:](float32[::1])', 'intp[:](float64[::1])'],
+    ["intp[:](float32[::1])", "intp[:](float64[::1])"],
     locals={
         "midpoints": numba.types.intp[::1],
         "left_edges": numba.types.intp[::1],
@@ -58,6 +59,7 @@ def find_peaks(x):
         i += 1
 
     return midpoints[:m]
+
 
 @numba.njit(cache=True)
 def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples):
@@ -156,6 +158,7 @@ def binary_search_for_n_clusters(
     )
     return clusters, strengths
 
+
 @numba.njit(cache=True)
 def min_cluster_size_barcode(cluster_tree, n_points, min_size):
     n_nodes = cluster_tree.child[-1] - n_points + 1
@@ -172,7 +175,9 @@ def min_cluster_size_barcode(cluster_tree, n_points, min_size):
     for idx in range(n_rows - 1, 0, -2):
         out_idx = cluster_tree.child[idx] - n_points
         parents[out_idx - 1 : out_idx + 1] = cluster_tree.parent[idx]
-        lambda_deaths[out_idx - 1 : out_idx + 1] =  np.exp(-1/cluster_tree.lambda_val[idx])
+        lambda_deaths[out_idx - 1 : out_idx + 1] = np.exp(
+            -1 / cluster_tree.lambda_val[idx]
+        )
 
         death_size = cluster_tree.child_size[idx - 1 : idx + 1].min()
         size_deaths[out_idx - 1 : out_idx + 1] = death_size
@@ -182,39 +187,41 @@ def min_cluster_size_barcode(cluster_tree, n_points, min_size):
 
     return size_births, size_deaths, parents, lambda_deaths
 
+
 @numba.njit(cache=True)
 def compute_total_persistence(births, deaths, lambda_deaths):
     # maintain left-open (birth, death] interval!
     sizes = np.unique(births)
     total_persistence = np.zeros(sizes.shape[0], dtype=np.float32)
-    
+
     for i in range(1, len(births)):
         birth = births[i]
         death = deaths[i]
         lambda_death = lambda_deaths[i]
-        
+
         if death <= birth:
             continue
-            
+
         # Manual binary search for birth_idx
         birth_idx = 0
         for j in range(len(sizes)):
             if sizes[j] >= birth:
                 birth_idx = j
                 break
-                
-        # Manual binary search for death_idx  
+
+        # Manual binary search for death_idx
         death_idx = len(sizes)
         for j in range(len(sizes)):
             if sizes[j] >= death:
                 death_idx = j
                 break
-                
+
         # Update persistence values
         for k in range(birth_idx, death_idx):
             total_persistence[k] += (death - birth) * lambda_death
-            
+
     return sizes, total_persistence
+
 
 @numba.njit(cache=True)
 def extract_clusters_by_id(condensed_tree, selected_ids):
@@ -224,7 +231,9 @@ def extract_clusters_by_id(condensed_tree, selected_ids):
         cluster_selection_epsilon=0.0,
         n_samples=condensed_tree.parent[0],
     )
-    strengths = get_point_membership_strength_vector(condensed_tree, selected_ids, labels)
+    strengths = get_point_membership_strength_vector(
+        condensed_tree, selected_ids, labels
+    )
     return labels, strengths
 
 
@@ -233,13 +242,13 @@ def jaccard_similarity(set_a_array, set_b_array):
     # Convert to sets for intersection/union operations
     intersection_count = 0
     union_set = set(set_a_array)
-    
+
     for item in set_b_array:
         if item in union_set:
             intersection_count += 1
         else:
             union_set.add(item)
-    
+
     union_count = len(union_set)
     return intersection_count / union_count if union_count > 0 else 0.0
 
@@ -253,60 +262,70 @@ def estimate_cluster_similarity(births, deaths, birth_a, birth_b):
         if births[i] <= birth_a and deaths[i] > birth_a:
             clusters_a[count_a] = i
             count_a += 1
-    
-    # Find clusters active at birth_b  
+
+    # Find clusters active at birth_b
     clusters_b = np.empty(len(births), dtype=np.int64)
     count_b = 0
     for i in range(len(births)):
         if births[i] <= birth_b and deaths[i] > birth_b:
             clusters_b[count_b] = i
             count_b += 1
-    
+
     # Trim arrays to actual sizes
     active_a = clusters_a[:count_a]
     active_b = clusters_b[:count_b]
-    
+
     return jaccard_similarity(active_a, active_b)
 
 
 @numba.njit(cache=True)
-def select_diverse_peaks(peaks, total_persistence, sizes, births, deaths, 
-                              min_similarity_threshold=0.2, max_layers=10):
+def select_diverse_peaks(
+    peaks,
+    total_persistence,
+    sizes,
+    births,
+    deaths,
+    min_similarity_threshold=0.2,
+    max_layers=10,
+):
     if len(peaks) == 0:
         return np.empty(0, dtype=np.int64)
-    
+
     # Sort peaks by persistence (highest first)
     peak_persistence = total_persistence[peaks]
     sorted_indices = np.argsort(peak_persistence)[::-1]
     sorted_peaks = peaks[sorted_indices]
-    
+
     # Pre-allocate arrays for selected peaks and births
     selected_peaks = np.empty(max_layers, dtype=np.int64)
     selected_births = np.empty(max_layers, dtype=np.float64)
     n_selected = 0
-    
+
     for i in range(len(sorted_peaks)):
         if n_selected >= max_layers:
             break
-            
+
         peak = sorted_peaks[i]
         birth_size = sizes[peak]
-        
+
         # Check similarity with already selected peaks
         is_diverse = True
         for j in range(n_selected):
             selected_birth = selected_births[j]
-            similarity = estimate_cluster_similarity(births, deaths, birth_size, selected_birth)
+            similarity = estimate_cluster_similarity(
+                births, deaths, birth_size, selected_birth
+            )
             if similarity > min_similarity_threshold:
                 is_diverse = False
                 break
-        
+
         if is_diverse:
             selected_peaks[n_selected] = peak
             selected_births[n_selected] = birth_size
             n_selected += 1
-    
+
     return selected_peaks[:n_selected]
+
 
 @numba.njit(cache=True)
 def _build_cluster_tree(labels):
@@ -347,9 +366,11 @@ def build_cluster_tree(labels):
             result[parent_name] = [(child_layer, child_cluster)]
     return result
 
+
 @numba.njit(cache=True)
-def find_duplicates(knn_inds, knn_dists):
-    duplicate_distance = np.max(knn_dists.T[0])
+def find_duplicates(knn_inds, knn_dists, duplicate_distance=None):
+    if duplicate_distance is None:
+        duplicate_distance = np.max(knn_dists.T[0])
     duplicates = set([(-1, -1) for i in range(0)])
     for i in range(knn_inds.shape[0]):
         for j in range(0, knn_inds.shape[1]):
