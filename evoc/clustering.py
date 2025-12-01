@@ -338,6 +338,12 @@ def evoc_clusters(
         The membership strengths of each point in the clustering at each layer.
         This gives a measure of how strongly each point belongs to each cluster.
 
+    nn_inds : array-like of shape (n_samples, n_neighbors)
+        Indices of nearest neighbors for each sample.
+
+    nn_dists : array-like of shape (n_samples, n_neighbors)
+        Distance from each sample to each nearest neighbor indexed by nn_inds
+
     duplicates : set of tuple of int
         Only returned in ``return_duplicates`` is True. A set of pairs of indices of
         potential duplicate points in the data.
@@ -379,9 +385,9 @@ def evoc_clusters(
             min_samples=min_samples,
         )
         if return_duplicates:
-            return [cluster_vector], [strengths], duplicates
+            return [cluster_vector], [strengths], nn_inds, nn_dists, duplicates
         else:
-            return [cluster_vector], [strengths]
+            return [cluster_vector], [strengths], nn_inds, nn_dists
     else:
         cluster_layers, membership_strengths = build_cluster_layers(
             embedding,
@@ -392,9 +398,9 @@ def evoc_clusters(
             next_cluster_size_quantile=next_cluster_size_quantile,
         )
         if return_duplicates:
-            return cluster_layers, membership_strengths, duplicates
+            return cluster_layers, membership_strengths, nn_inds, nn_dists, duplicates
         else:
-            return cluster_layers, membership_strengths
+            return cluster_layers, membership_strengths, nn_inds, nn_dists
 
 
 class EVoC(BaseEstimator, ClusterMixin):
@@ -498,6 +504,12 @@ class EVoC(BaseEstimator, ClusterMixin):
         tuples of (layer, cluster) and the values are lists of tuples of (layer, cluster)
         representing the children of the key cluster.
 
+    nn_inds_ : array-like of shape (n_samples, n_neighbors)
+        Indices of nearest neighbors for each sample.
+
+    nn_dists_ : array-like of shape (n_samples, n_neighbors)
+        Distance from each sample to each nearest neighbor (indexed by nn_inds).
+
     duplicates_ : set of tuple of int
         A set of pairs of indices of potential duplicate points in the data.
     """
@@ -561,24 +573,28 @@ class EVoC(BaseEstimator, ClusterMixin):
 
         X = check_array(X)
 
-        self.cluster_layers_, self.membership_strength_layers_, self.duplicates_ = (
-            evoc_clusters(
-                X,
-                n_neighbors=self.n_neighbors,
-                noise_level=self.noise_level,
-                base_min_cluster_size=self.base_min_cluster_size,
-                base_n_clusters=self.base_n_clusters,
-                min_num_clusters=self.min_num_clusters,
-                approx_n_clusters=self.approx_n_clusters,
-                next_cluster_size_quantile=self.next_cluster_size_quantile,
-                min_samples=self.min_samples,
-                n_epochs=self.n_epochs,
-                node_embedding_init=self.node_embedding_init,
-                symmetrize_graph=self.symmetrize_graph,
-                return_duplicates=True,
-                node_embedding_dim=self.node_embedding_dim,
-                neighbor_scale=self.neighbor_scale,
-            )
+        (
+            self.cluster_layers_,
+            self.membership_strength_layers_,
+            self.nn_inds_,
+            self.nn_dists_,
+            self.duplicates_,
+        ) = evoc_clusters(
+            X,
+            n_neighbors=self.n_neighbors,
+            noise_level=self.noise_level,
+            base_min_cluster_size=self.base_min_cluster_size,
+            base_n_clusters=self.base_n_clusters,
+            min_num_clusters=self.min_num_clusters,
+            approx_n_clusters=self.approx_n_clusters,
+            next_cluster_size_quantile=self.next_cluster_size_quantile,
+            min_samples=self.min_samples,
+            n_epochs=self.n_epochs,
+            node_embedding_init=self.node_embedding_init,
+            symmetrize_graph=self.symmetrize_graph,
+            return_duplicates=True,
+            node_embedding_dim=self.node_embedding_dim,
+            neighbor_scale=self.neighbor_scale,
         )
 
         if len(self.cluster_layers_) == 1:
