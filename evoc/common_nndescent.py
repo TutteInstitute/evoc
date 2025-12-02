@@ -403,3 +403,74 @@ def apply_graph_update_array(
                     n_changes += added
 
     return n_changes
+
+
+@numba.njit(
+    numba.uint32(
+        numba.types.Tuple(
+            (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+        ),
+        numba.float32[:, :, ::1],
+        numba.int32[:, ::1],
+        numba.int64,
+    ),
+    parallel=True,
+    cache=True,
+    locals={
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "added": numba.uint8,
+        "n": numba.uint32,
+        "t": numba.uint32,
+        "j": numba.uint32,
+        "priorities": numba.float32[:, ::1],
+        "indices": numba.int32[:, ::1],
+        "flags": numba.uint8[:, ::1],
+    },
+)
+def apply_sorted_graph_updates(
+    current_graph, update_array, n_updates_per_block, n_threads
+):
+    """
+    Apply pre-sorted graph updates where updates are bucketed by target block.
+
+    Each thread processes only its own bucket, avoiding the need to scan all updates.
+    This provides O(updates_per_block) work per thread instead of O(total_updates).
+    """
+    n_changes = 0
+    priorities = current_graph[1]
+    indices = current_graph[0]
+    flags = current_graph[2]
+
+    n_vertices = priorities.shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
+    max_updates_per_thread = update_array.shape[1] // n_threads
+
+    for n in numba.prange(n_threads):
+        block_start = n * vertex_block_size
+        block_end = min(block_start + vertex_block_size, n_vertices)
+
+        # Process all updates in this block's bucket
+        # Updates were written by each thread at offset t * max_updates_per_thread
+        for t in range(n_threads):
+            thread_start = t * max_updates_per_thread
+            thread_count = n_updates_per_block[n, t + 1]
+
+            for j in range(thread_count):
+                idx = thread_start + j
+                p = np.int32(update_array[n, idx, 0])
+                q = np.int32(update_array[n, idx, 1])
+                d = np.float32(update_array[n, idx, 2])
+
+                # Apply update to p if it's in this block
+                if p >= block_start and p < block_end:
+                    added = flagged_heap_push(priorities[p], indices[p], flags[p], d, q)
+                    n_changes += added
+
+                # Apply update to q if it's in this block
+                if q >= block_start and q < block_end:
+                    added = flagged_heap_push(priorities[q], indices[q], flags[q], d, p)
+                    n_changes += added
+
+    return n_changes

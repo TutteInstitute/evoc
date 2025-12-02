@@ -8,6 +8,7 @@ from .common_nndescent import (
     flagged_heap_push,
     build_candidates,
     apply_graph_update_array,
+    apply_sorted_graph_updates,
 )
 
 # Used for a floating point "nearly zero" comparison
@@ -552,6 +553,153 @@ def generate_graph_update_array_uint8(
         n_updates_per_thread[t] = idx
 
 
+@numba.njit(
+    numba.void(
+        numba.float32[:, :, ::1],
+        numba.int32[:, ::1],
+        numba.int32[:, ::1],
+        numba.int32[:, ::1],
+        numba.float32[:],
+        numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
+        numba.int64,
+    ),
+    locals={
+        "data_p": numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+        "dist_thresh_p": numba.float32,
+        "dist_thresh_q": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "max_updates": numba.intp,
+        "max_threshold": numba.float32,
+        "p_block": numba.int32,
+        "q_block": numba.int32,
+    },
+    parallel=True,
+    cache=True,
+    boundscheck=False,
+)
+def generate_sorted_graph_update_array_uint8(
+    update_array,
+    n_updates_per_block,
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    data,
+    n_threads,
+):
+    """
+    Generate graph updates pre-sorted by target block for uint8 data.
+    """
+    block_size_candidates = new_candidate_block.shape[0]
+    max_new_candidates = new_candidate_block.shape[1]
+    max_old_candidates = old_candidate_block.shape[1]
+    rows_per_thread = (block_size_candidates // n_threads) + 1
+
+    n_vertices = data.shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
+    max_updates = update_array.shape[1]
+    max_updates_per_src_thread = max_updates // n_threads
+
+    # Reset update counts
+    for b in numba.prange(n_threads):
+        for t in range(n_threads + 1):
+            n_updates_per_block[b, t] = 0
+
+    # Each thread generates updates and places them in appropriate buckets
+    for t in numba.prange(n_threads):
+        # Thread-local counters for each bucket
+        local_counts = np.zeros(n_threads, dtype=np.int32)
+
+        for r in range(rows_per_thread):
+            i = t * rows_per_thread + r
+            if i >= block_size_candidates:
+                break
+
+            for j in range(max_new_candidates):
+                p = new_candidate_block[i, j]
+                if p < 0:
+                    continue
+
+                data_p = data[p]
+                dist_thresh_p = dist_thresholds[p]
+                p_block = p // vertex_block_size
+                if p_block >= n_threads:
+                    p_block = n_threads - 1
+
+                # Compare with other new candidates
+                for k in range(j, max_new_candidates):
+                    q = new_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = fast_bit_jaccard(data_p, data[q])
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        q_block = q // vertex_block_size
+                        if q_block >= n_threads:
+                            q_block = n_threads - 1
+
+                        # Place update in p's bucket
+                        bucket_idx = local_counts[p_block]
+                        write_idx = t * max_updates_per_src_thread + bucket_idx
+                        if write_idx < max_updates:
+                            update_array[p_block, write_idx, 0] = p
+                            update_array[p_block, write_idx, 1] = q
+                            update_array[p_block, write_idx, 2] = d
+                            local_counts[p_block] += 1
+
+                        # If q is in a different block, also place in q's bucket
+                        if q_block != p_block:
+                            bucket_idx = local_counts[q_block]
+                            write_idx = t * max_updates_per_src_thread + bucket_idx
+                            if write_idx < max_updates:
+                                update_array[q_block, write_idx, 0] = p
+                                update_array[q_block, write_idx, 1] = q
+                                update_array[q_block, write_idx, 2] = d
+                                local_counts[q_block] += 1
+
+                # Compare with old candidates
+                for k in range(max_old_candidates):
+                    q = old_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = fast_bit_jaccard(data_p, data[q])
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        q_block = q // vertex_block_size
+                        if q_block >= n_threads:
+                            q_block = n_threads - 1
+
+                        # Place update in p's bucket
+                        bucket_idx = local_counts[p_block]
+                        write_idx = t * max_updates_per_src_thread + bucket_idx
+                        if write_idx < max_updates:
+                            update_array[p_block, write_idx, 0] = p
+                            update_array[p_block, write_idx, 1] = q
+                            update_array[p_block, write_idx, 2] = d
+                            local_counts[p_block] += 1
+
+                        # If q is in a different block, also place in q's bucket
+                        if q_block != p_block:
+                            bucket_idx = local_counts[q_block]
+                            write_idx = t * max_updates_per_src_thread + bucket_idx
+                            if write_idx < max_updates:
+                                update_array[q_block, write_idx, 0] = p
+                                update_array[q_block, write_idx, 1] = q
+                                update_array[q_block, write_idx, 2] = d
+                                local_counts[q_block] += 1
+
+        # Record total updates generated by this thread for each bucket
+        for b in range(n_threads):
+            n_updates_per_block[b, t + 1] = local_counts[b]
+
+
 def nn_descent_uint8(
     data,
     n_neighbors,
@@ -609,6 +757,74 @@ def nn_descent_uint8(
 
             c += apply_graph_update_array(
                 current_graph, update_array, n_updates_per_thread, n_threads
+            )
+
+        if c <= delta * n_neighbors * data.shape[0]:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
+            return deheap_sort(current_graph[0], current_graph[1])
+
+        block_size = min(n_vertices, 2 * block_size)
+        n_blocks = n_vertices // block_size
+
+    return deheap_sort(current_graph[0], current_graph[1])
+
+
+def nn_descent_uint8_sorted(
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    n_iters=10,
+    delta=0.001,
+    leaf_array=None,
+    verbose=False,
+):
+    n_threads = numba.get_num_threads()
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
+    init_random_uint8(n_neighbors, data, current_graph, rng_state)
+
+    n_vertices = data.shape[0]
+    block_size = 65536 // n_threads
+    n_blocks = n_vertices // block_size
+
+    max_updates_per_thread = int(
+        ((max_candidates**2 + max_candidates * (max_candidates - 1) / 2) * block_size)
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_block = np.zeros((n_threads, n_threads + 1), dtype=np.int32)
+
+    for n in range(n_iters):
+        if verbose:
+            print("\t", n + 1, " / ", n_iters)
+
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
+            current_graph, max_candidates, rng_state, n_threads
+        )
+
+        c = 0
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
+
+            new_candidate_block = new_candidate_neighbors[block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[block_start:block_end]
+
+            dist_thresholds = current_graph[1][:, 0]
+
+            generate_sorted_graph_update_array_uint8(
+                update_array,
+                n_updates_per_block,
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                n_threads,
+            )
+
+            c += apply_sorted_graph_updates(
+                current_graph, update_array, n_updates_per_block, n_threads
             )
 
         if c <= delta * n_neighbors * data.shape[0]:
