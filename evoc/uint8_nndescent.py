@@ -405,7 +405,13 @@ def init_rp_tree_uint8(data, current_graph, leaf_array, n_threads):
             updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
         )
 
+        n_vertices = current_graph[0].shape[0]
+        vertex_block_size = n_vertices // n_threads + 1
+
         for t in numba.prange(n_threads):
+            block_start = t * vertex_block_size
+            block_end = min(block_start + vertex_block_size, n_vertices)
+
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
                     p = np.int32(updates[j, k, 0])
@@ -415,7 +421,7 @@ def init_rp_tree_uint8(data, current_graph, leaf_array, n_threads):
                     if p == -1 or q == -1:
                         continue
 
-                    if p % n_threads == t:
+                    if p >= block_start and p < block_end:
                         flagged_heap_push(
                             current_graph[1][p],
                             current_graph[0][p],
@@ -423,7 +429,7 @@ def init_rp_tree_uint8(data, current_graph, leaf_array, n_threads):
                             d,
                             q,
                         )
-                    if q % n_threads == t:
+                    if q >= block_start and q < block_end:
                         flagged_heap_push(
                             current_graph[1][q],
                             current_graph[0][q],
