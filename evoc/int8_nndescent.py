@@ -28,25 +28,27 @@ point_indices_type = numba.int32[::1]
     ],
     fastmath=True,
     locals={
-        "result": numba.types.float32,
+        "result": numba.types.int32,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
     cache=True,
 )
 def fast_int_inner_product_dissimilarity(x, y):
-    result = 0.0
+    result = 0
     dim = x.shape[0]
 
     for i in range(dim):
         result += x[i] * y[i]
 
-    return -result
+    return -np.float32(result)
 
 
 @numba.njit(
     numba.types.Tuple((numba.int32[::1], numba.int32[::1]))(
-        numba.types.Array(numba.types.int8, 2, "C", readonly=True), numba.int32[::1], numba.int64[::1]
+        numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.int32[::1],
+        numba.int64[::1],
     ),
     locals={
         "n_left": numba.uint32,
@@ -377,7 +379,7 @@ def generate_leaf_updates_int8(
 def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
 
     n_leaves = leaf_array.shape[0]
-    block_size = 64
+    block_size = n_threads * 64
     n_blocks = n_leaves // block_size
 
     max_leaf_size = leaf_array.shape[1]
@@ -560,7 +562,7 @@ def nn_descent_int8(
     n_blocks = n_vertices // block_size
 
     max_updates_per_thread = int(
-        ((max_candidates ** 2 + max_candidates * (max_candidates - 1) / 2) * block_size)
+        ((max_candidates**2 + max_candidates * (max_candidates - 1) / 2) * block_size)
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)

@@ -51,7 +51,7 @@ def tau_rand(state):
     return abs(float(integer) / 0x7FFFFFFF)
 
 
-@numba.njit(cache=True)
+# @numba.njit(cache=True)
 def make_heap(n_points, size):
     indices = np.full((int(n_points), int(size)), -1, dtype=np.int32)
     distances = np.full((int(n_points), int(size)), np.inf, dtype=np.float32)
@@ -217,22 +217,30 @@ def build_candidates(current_graph, max_candidates, rng_state, n_threads):
         (n_vertices, max_candidates), np.inf, dtype=np.float32
     )
 
+    block_size = n_vertices // n_threads + 1
+
     for n in numba.prange(n_threads):
         local_rng_state = rng_state + n
         for i in range(n_vertices):
             for j in range(n_neighbors):
                 idx = current_indices[i, j]
 
-                if idx >= 0 and (i % n_threads == n or idx % n_threads == n):
+                # if idx >= 0 and (i % n_threads == n or idx % n_threads == n):
+                if idx >= 0 and (i // block_size == n or idx // block_size == n):
                     isn = current_flags[i, j]
                     d = tau_rand(local_rng_state)
 
                     if isn:
-                        if i % n_threads == n:
+                        # if i % n_threads == n:
+                        if i // block_size == n:
                             build_candidates_heap_push(
-                                new_candidate_priority[i], new_candidate_indices[i], d, idx
+                                new_candidate_priority[i],
+                                new_candidate_indices[i],
+                                d,
+                                idx,
                             )
-                        if idx % n_threads == n:
+                        # if idx % n_threads == n:
+                        if idx // block_size == n:
                             build_candidates_heap_push(
                                 new_candidate_priority[idx],
                                 new_candidate_indices[idx],
@@ -240,11 +248,16 @@ def build_candidates(current_graph, max_candidates, rng_state, n_threads):
                                 i,
                             )
                     else:
-                        if i % n_threads == n:
+                        # if i % n_threads == n:
+                        if i // block_size == n:
                             build_candidates_heap_push(
-                                old_candidate_priority[i], old_candidate_indices[i], d, idx
+                                old_candidate_priority[i],
+                                old_candidate_indices[i],
+                                d,
+                                idx,
                             )
-                        if idx % n_threads == n:
+                        # if idx % n_threads == n:
+                        if idx // block_size == n:
                             build_candidates_heap_push(
                                 old_candidate_priority[idx],
                                 old_candidate_indices[idx],
@@ -363,7 +376,13 @@ def apply_graph_update_array(
     indices = current_graph[0]
     flags = current_graph[2]
 
+    n_vertices = priorities.shape[0]
+    block_size = n_vertices // n_threads + 1
+
     for n in numba.prange(n_threads):
+        block_start = n * block_size
+        block_end = min(block_start + block_size, n_vertices)
+
         for i in range(update_array.shape[0]):
             for j in range(n_updates_per_thread[i]):
                 p = np.int32(update_array[i, j, 0])
@@ -373,11 +392,11 @@ def apply_graph_update_array(
                 if p == -1 or q == -1:
                     break
 
-                if p % n_threads == n:
+                if p >= block_start and p < block_end:
                     added = flagged_heap_push(priorities[p], indices[p], flags[p], d, q)
                     n_changes += added
 
-                if q % n_threads == n:
+                if q >= block_start and q < block_end:
                     added = flagged_heap_push(priorities[q], indices[q], flags[q], d, p)
                     n_changes += added
 

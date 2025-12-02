@@ -136,7 +136,7 @@ def float_random_projection_split(data, indices, rng_state):
     for d in range(dim):
         hyperplane_vector[d] = left_data[d] - right_data[d]
         hyperplane_norm += hyperplane_vector[d] * hyperplane_vector[d]
-    
+
     hyperplane_norm = np.sqrt(hyperplane_norm)
     if abs(hyperplane_norm) < EPS:
         hyperplane_norm = 1.0
@@ -158,7 +158,7 @@ def float_random_projection_split(data, indices, rng_state):
         point_idx = indices[idx]
         test_data = data[point_idx]
         margin = 0.0
-        
+
         # Compute margin (dot product with hyperplane normal)
         for d in range(dim):
             margin += hyperplane_vector[d] * test_data[d]
@@ -194,7 +194,7 @@ def float_random_projection_split(data, indices, rng_state):
     # Create final arrays with exact sizes (copy only what we need)
     indices_left = np.empty(n_left, dtype=np.int32)
     indices_right = np.empty(n_right, dtype=np.int32)
-    
+
     for i in range(n_left):
         indices_left[i] = temp_left[i]
     for j in range(n_right):
@@ -266,9 +266,13 @@ def make_float_tree(
 
     return
 
+
 from numba.core.errors import NumbaTypeSafetyWarning
 from warnings import simplefilter
-simplefilter('ignore', category=NumbaTypeSafetyWarning)
+
+simplefilter("ignore", category=NumbaTypeSafetyWarning)
+
+
 @numba.njit(
     numba.int32[:, ::1](
         numba.types.Array(numba.types.float32, 2, "C", readonly=True),
@@ -277,7 +281,12 @@ simplefilter('ignore', category=NumbaTypeSafetyWarning)
         numba.uint64,
     ),
     nogil=True,
-    locals={"n_leaves": numba.uint64, "i":numba.uint64, "points":point_indices_type, "max_leaf_size":numba.uint64},
+    locals={
+        "n_leaves": numba.uint64,
+        "i": numba.uint64,
+        "points": point_indices_type,
+        "max_leaf_size": numba.uint64,
+    },
     parallel=False,
     cache=False,
 )
@@ -310,7 +319,10 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
         result[i, :leaf_size] = points
 
     return result
-simplefilter('default', category=NumbaTypeSafetyWarning)
+
+
+simplefilter("default", category=NumbaTypeSafetyWarning)
+
 
 @numba.njit(
     numba.types.List(numba.int32[:, ::1])(
@@ -377,7 +389,9 @@ def generate_leaf_updates_float(
                 updates[t, idx, 2] = -1.0
                 idx += 1
 
-                for j in range(i + 1, leaf_block.shape[1]):  # Start from i+1 to skip self-comparison
+                for j in range(
+                    i + 1, leaf_block.shape[1]
+                ):  # Start from i+1 to skip self-comparison
                     q = leaf_block[n, j]
                     if q < 0:
                         break
@@ -394,6 +408,7 @@ def generate_leaf_updates_float(
         n_updates_per_thread[t] = idx
 
     return updates
+
 
 @numba.njit(
     numba.void(
@@ -493,6 +508,7 @@ def init_random_float(n_neighbors, data, heap, rng_state):
 
     return
 
+
 @numba.njit(
     numba.types.void(
         numba.float32[:, :, ::1],
@@ -540,7 +556,7 @@ def generate_graph_update_array_float_basic(
     for t in numba.prange(n_threads):
         idx = 0
         max_updates = update_array.shape[1]
-        
+
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
             if i >= block_size or idx >= max_updates:
@@ -549,7 +565,7 @@ def generate_graph_update_array_float_basic(
             for j in range(max_new_candidates):
                 if idx >= max_updates:
                     break
-                    
+
                 p = new_candidate_block[i, j]
                 if p < 0:
                     continue
@@ -559,19 +575,19 @@ def generate_graph_update_array_float_basic(
                 for k in range(j + 1, max_new_candidates):
                     if idx >= max_updates:
                         break
-                        
+
                     q = new_candidate_block[i, k]
                     if q < 0:
                         continue
 
                     # Compute distance once
                     d = fast_cosine(data_p, data[q])
-                    
+
                     # Use max for better branch prediction than OR condition
                     dist_thresh_q = dist_thresholds[q]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
                     threshold_check = d <= max_threshold
-                    
+
                     if threshold_check:
                         update_array[t, idx, 0] = p
                         update_array[t, idx, 1] = q
@@ -581,7 +597,7 @@ def generate_graph_update_array_float_basic(
                 for k in range(max_old_candidates):
                     if idx >= max_updates:
                         break
-                        
+
                     q = old_candidate_block[i, k]
                     if q < 0:
                         continue
@@ -590,7 +606,7 @@ def generate_graph_update_array_float_basic(
                     dist_thresh_q = dist_thresholds[q]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
                     threshold_check = d <= max_threshold
-                    
+
                     if threshold_check:
                         update_array[t, idx, 0] = p
                         update_array[t, idx, 1] = q
@@ -598,6 +614,7 @@ def generate_graph_update_array_float_basic(
                         idx += 1
 
         n_updates_per_thread[t] = idx
+
 
 @numba.njit(
     numba.void(
@@ -646,7 +663,7 @@ def generate_graph_update_array_float(
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
     rows_per_thread = (block_size // n_threads) + 1
-    
+
     # Working set size - process this many candidates at a time
     # Tuned for typical L1/L2 cache sizes (adjust based on data dimensionality)
     working_set_size = 8
@@ -654,7 +671,7 @@ def generate_graph_update_array_float(
     for t in numba.prange(n_threads):
         idx = 0
         max_updates = update_array.shape[1]
-        
+
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
             if i >= block_size or idx >= max_updates:
@@ -664,16 +681,16 @@ def generate_graph_update_array_float(
             new_start = 0
             while new_start < max_new_candidates and idx < max_updates:
                 new_end = min(new_start + working_set_size, max_new_candidates)
-                
+
                 # Process pairs within this working set
                 for j in range(new_start, new_end):
                     if idx >= max_updates:
                         break
-                        
+
                     p = new_candidate_block[i, j]
                     if p < 0:
                         continue
-                        
+
                     data_p = data[p]
                     dist_thresh_p = dist_thresholds[p]
 
@@ -681,7 +698,7 @@ def generate_graph_update_array_float(
                     for k in range(j + 1, new_end):
                         if idx >= max_updates:
                             break
-                            
+
                         q = new_candidate_block[i, k]
                         if q < 0:
                             continue
@@ -690,7 +707,7 @@ def generate_graph_update_array_float(
                         dist_thresh_q = dist_thresholds[q]
                         max_threshold = max(dist_thresh_p, dist_thresh_q)
                         threshold_check = d <= max_threshold
-                        
+
                         if threshold_check:
                             update_array[t, idx, 0] = p
                             update_array[t, idx, 1] = q
@@ -701,8 +718,8 @@ def generate_graph_update_array_float(
                     for k in range(new_end, max_new_candidates):
                         if idx >= max_updates:
                             break
-                            
-                        q = new_candidate_block[i, k]  
+
+                        q = new_candidate_block[i, k]
                         if q < 0:
                             continue
 
@@ -710,7 +727,7 @@ def generate_graph_update_array_float(
                         dist_thresh_q = dist_thresholds[q]
                         max_threshold = max(dist_thresh_p, dist_thresh_q)
                         threshold_check = d <= max_threshold
-                        
+
                         if threshold_check:
                             update_array[t, idx, 0] = p
                             update_array[t, idx, 1] = q
@@ -721,11 +738,11 @@ def generate_graph_update_array_float(
                     old_start = 0
                     while old_start < max_old_candidates and idx < max_updates:
                         old_end = min(old_start + working_set_size, max_old_candidates)
-                        
+
                         for k in range(old_start, old_end):
                             if idx >= max_updates:
                                 break
-                                
+
                             q = old_candidate_block[i, k]
                             if q < 0:
                                 continue
@@ -734,15 +751,15 @@ def generate_graph_update_array_float(
                             dist_thresh_q = dist_thresholds[q]
                             max_threshold = max(dist_thresh_p, dist_thresh_q)
                             threshold_check = d <= max_threshold
-                            
+
                             if threshold_check:
                                 update_array[t, idx, 0] = p
                                 update_array[t, idx, 1] = q
                                 update_array[t, idx, 2] = d
                                 idx += 1
-                        
+
                         old_start = old_end
-                
+
                 new_start = new_end
 
         n_updates_per_thread[t] = idx
@@ -785,7 +802,7 @@ def nn_descent_float(
     n_blocks = n_vertices // block_size
 
     max_updates_per_thread = int(
-        ((max_candidates ** 2 + max_candidates * (max_candidates - 1) / 2) * block_size)
+        ((max_candidates**2 + max_candidates * (max_candidates - 1) / 2) * block_size)
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
