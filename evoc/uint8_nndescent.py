@@ -1,5 +1,9 @@
 import numba
 import numpy as np
+from numba import types
+from numba.core import cgutils
+from numba.extending import intrinsic
+import llvmlite.ir as ir
 
 from .common_nndescent import (
     tau_rand_int,
@@ -22,6 +26,43 @@ point_indices_type = numba.int32[::1]
 _POPCNT = np.asarray([np.uint8(i).bit_count() for i in range(256)], dtype=np.float32)
 
 
+@intrinsic
+def popcnt_u8(typingctx, val):
+    """Hardware popcount for uint8 using LLVM intrinsic."""
+    sig = types.uint8(types.uint8)
+
+    def popcnt_u8_impl(context, builder, sig, args):
+        [val] = args
+        # Declare LLVM's ctpop intrinsic for i8
+        llvm_i8 = val.type
+        fnty = ir.FunctionType(llvm_i8, [llvm_i8])
+        llvm_ctpop = cgutils.get_or_insert_function(
+            builder.module, fnty, "llvm.ctpop.i8"
+        )
+        result = builder.call(llvm_ctpop, [val])
+        return result
+
+    return sig, popcnt_u8_impl
+
+
+@intrinsic
+def popcnt_u64(typingctx, val):
+    """Hardware popcount for uint64 using LLVM intrinsic."""
+    sig = types.uint64(types.uint64)
+
+    def popcnt_u64_impl(context, builder, sig, args):
+        [val] = args
+        llvm_i64 = val.type
+        fnty = ir.FunctionType(llvm_i64, [llvm_i64])
+        llvm_ctpop = cgutils.get_or_insert_function(
+            builder.module, fnty, "llvm.ctpop.i64"
+        )
+        result = builder.call(llvm_ctpop, [val])
+        return result
+
+    return sig, popcnt_u64_impl
+
+
 @numba.njit(
     [
         "f4(u1[::1],u1[::1])",
@@ -31,28 +72,94 @@ _POPCNT = np.asarray([np.uint8(i).bit_count() for i in range(256)], dtype=np.flo
         ),
     ],
     fastmath=True,
-    locals={
-        "result": numba.types.float32,
-        "denom": numba.types.float32,
-        "and_": numba.types.uint8,
-        "or_": numba.types.uint8,
-        "dim": numba.types.intp,
-        "i": numba.types.uint16,
-    },
     cache=True,
+    nogil=True,
 )
 def fast_bit_jaccard(x, y):
-    result = 0.0
-    denom = 0.0
+    """Binary Jaccard using hardware POPCNT instruction."""
+    result = np.uint32(0)
+    denom = np.uint32(0)
     dim = x.shape[0]
 
     for i in range(dim):
-        and_ = x[i] & y[i]
-        or_ = x[i] | y[i]
-        result += _POPCNT[and_]
-        denom += _POPCNT[or_]
+        and_val = x[i] & y[i]
+        or_val = x[i] | y[i]
+        result += popcnt_u8(and_val)
+        denom += popcnt_u8(or_val)
 
-    return -(result / denom)
+    if denom > 0:
+        return -(np.float32(result) / np.float32(denom))
+    else:
+        return 0.0
+
+
+@intrinsic
+def load_u64_from_u8_array(typingctx, arr, offset):
+    """Load a uint64 from a uint8 array at given byte offset."""
+    sig = types.uint64(types.Array(types.uint8, 1, "C"), types.intp)
+
+    def load_u64_impl(context, builder, sig, args):
+        [arr, offset] = args
+
+        # Get the array structure
+        ary = context.make_array(sig.args[0])(context, builder, arr)
+        ptr = ary.data
+
+        # Get element pointer at offset
+        elem_ptr = builder.gep(ptr, [offset])
+
+        # Cast uint8* to uint64*
+        i64_ptr_type = ir.PointerType(ir.IntType(64))
+        ptr_u64 = builder.bitcast(elem_ptr, i64_ptr_type)
+
+        # Load uint64
+        value = builder.load(ptr_u64)
+
+        return value
+
+    return sig, load_u64_impl
+
+
+@numba.njit(
+    [
+        "f4(u1[::1],u1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    cache=True,
+    boundscheck=False,
+    nogil=True,
+)
+def fast_bit_jaccard_u64(x, y):
+    """
+    Use load intrinsic to avoid type conversion overhead.
+    REQUIRES: Array size divisible by 8.
+    """
+    result = np.uint64(0)
+    denom = np.uint64(0)
+
+    n_u64 = x.shape[0] // 8
+
+    for i in range(n_u64):
+        offset = i * 8
+
+        # Load uint64 values directly
+        x_val = load_u64_from_u8_array(x, offset)
+        y_val = load_u64_from_u8_array(y, offset)
+
+        and_val = x_val & y_val
+        or_val = x_val | y_val
+
+        result += popcnt_u64(and_val)
+        denom += popcnt_u64(or_val)
+
+    if denom > 0:
+        return -(np.float32(result) / np.float32(denom))
+    else:
+        return 0.0
 
 
 @numba.njit(
