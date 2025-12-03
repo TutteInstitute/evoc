@@ -195,7 +195,7 @@ def knn_graph(
     max_rptree_depth=200,
     n_iters=None,
     delta=0.001,
-    delta_improv=None,
+    delta_improv=0.001,
     n_jobs=None,
     verbose=False,
     use_sorted_updates=True,
