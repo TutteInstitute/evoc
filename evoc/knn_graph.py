@@ -261,6 +261,7 @@ def knn_graph(
         leaf_array=leaf_array,
         verbose=verbose,
         use_sorted_updates=use_sorted_updates,
+        delta_improv=0.001,
     )
 
     if np.any(neighbor_graph[0] < 0):

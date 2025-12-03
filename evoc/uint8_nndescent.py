@@ -707,9 +707,32 @@ def nn_descent_uint8(
     max_candidates=50,
     n_iters=10,
     delta=0.001,
+    delta_improv=None,
     leaf_array=None,
     verbose=False,
 ):
+    """
+    Perform approximate nearest neighbor descent algorithm using uint8 data.
+
+    Parameters:
+    - data: The input data array.
+    - n_neighbors: The number of nearest neighbors to search for.
+    - rng_state: The random number generator state.
+    - max_candidates: The maximum number of candidates to consider during the search. Default is 50.
+    - n_iters: The number of iterations to perform. Default is 10.
+    - delta: The stopping threshold based on update count. Default is 0.001.
+    - delta_improv: Optional stopping threshold based on relative improvement in total
+        graph distance. When set (e.g., 0.001 for 0.1%), the algorithm will also
+        terminate when the relative improvement in sum of all distances drops below
+        this threshold. This can provide earlier termination on data with good
+        structure, adapting to the intrinsic difficulty of the dataset. Default is None
+        (disabled).
+    - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
+    - verbose: Whether to print progress information. Default is False.
+
+    Returns:
+    - The sorted nearest neighbor graph.
+    """
     n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
     init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
@@ -725,6 +748,9 @@ def nn_descent_uint8(
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
+    # For distance-based termination
+    prev_sum_dist = None
 
     for n in range(n_iters):
         if verbose:
@@ -759,10 +785,29 @@ def nn_descent_uint8(
                 current_graph, update_array, n_updates_per_thread, n_threads
             )
 
+        # Check update count termination
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
                 print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return deheap_sort(current_graph[0], current_graph[1])
+
+        # Check distance improvement termination (if enabled)
+        if delta_improv is not None:
+            all_distances = current_graph[1]
+            valid_mask = all_distances < INF
+            sum_dist = np.sum(all_distances[valid_mask])
+
+            if prev_sum_dist is not None:
+                rel_improv = abs(sum_dist - prev_sum_dist) / abs(prev_sum_dist)
+                if rel_improv < delta_improv:
+                    if verbose:
+                        print(
+                            f"\tDistance improvement threshold met ({rel_improv:.4%} < {delta_improv:.4%})"
+                            f" -- exiting after {n + 1} iterations"
+                        )
+                    return deheap_sort(current_graph[0], current_graph[1])
+
+            prev_sum_dist = sum_dist
 
         block_size = min(n_vertices, 2 * block_size)
         n_blocks = n_vertices // block_size
@@ -777,9 +822,35 @@ def nn_descent_uint8_sorted(
     max_candidates=50,
     n_iters=10,
     delta=0.001,
+    delta_improv=None,
     leaf_array=None,
     verbose=False,
 ):
+    """
+    Perform approximate nearest neighbor descent algorithm using uint8 data.
+
+    This version uses pre-sorted updates bucketed by target block for potentially
+    better performance when n_threads is large.
+
+    Parameters:
+    - data: The input data array.
+    - n_neighbors: The number of nearest neighbors to search for.
+    - rng_state: The random number generator state.
+    - max_candidates: The maximum number of candidates to consider during the search. Default is 50.
+    - n_iters: The number of iterations to perform. Default is 10.
+    - delta: The stopping threshold based on update count. Default is 0.001.
+    - delta_improv: Optional stopping threshold based on relative improvement in total
+        graph distance. When set (e.g., 0.001 for 0.1%), the algorithm will also
+        terminate when the relative improvement in sum of all distances drops below
+        this threshold. This can provide earlier termination on data with good
+        structure, adapting to the intrinsic difficulty of the dataset. Default is None
+        (disabled).
+    - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
+    - verbose: Whether to print progress information. Default is False.
+
+    Returns:
+    - The sorted nearest neighbor graph.
+    """
     n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
     init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
@@ -794,6 +865,9 @@ def nn_descent_uint8_sorted(
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_block = np.zeros((n_threads, n_threads + 1), dtype=np.int32)
+
+    # For distance-based termination
+    prev_sum_dist = None
 
     for n in range(n_iters):
         if verbose:
@@ -827,10 +901,29 @@ def nn_descent_uint8_sorted(
                 current_graph, update_array, n_updates_per_block, n_threads
             )
 
+        # Check update count termination
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
                 print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return deheap_sort(current_graph[0], current_graph[1])
+
+        # Check distance improvement termination (if enabled)
+        if delta_improv is not None:
+            all_distances = current_graph[1]
+            valid_mask = all_distances < INF
+            sum_dist = np.sum(all_distances[valid_mask])
+
+            if prev_sum_dist is not None:
+                rel_improv = abs(sum_dist - prev_sum_dist) / abs(prev_sum_dist)
+                if rel_improv < delta_improv:
+                    if verbose:
+                        print(
+                            f"\tDistance improvement threshold met ({rel_improv:.4%} < {delta_improv:.4%})"
+                            f" -- exiting after {n + 1} iterations"
+                        )
+                    return deheap_sort(current_graph[0], current_graph[1])
+
+            prev_sum_dist = sum_dist
 
         block_size = min(n_vertices, 2 * block_size)
         n_blocks = n_vertices // block_size
