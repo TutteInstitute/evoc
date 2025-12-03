@@ -103,7 +103,6 @@ def nn_descent(
     use_sorted_updates=True,
     delta_improv=None,
 ):
-
     if input_dtype == np.uint8:
         if use_sorted_updates:
             neighbor_graph = nn_descent_uint8_sorted(
@@ -196,6 +195,7 @@ def knn_graph(
     max_rptree_depth=200,
     n_iters=None,
     delta=0.001,
+    delta_improv=None,
     n_jobs=None,
     verbose=False,
     use_sorted_updates=True,
@@ -268,7 +268,7 @@ def knn_graph(
         leaf_array=leaf_array,
         verbose=verbose,
         use_sorted_updates=use_sorted_updates,
-        delta_improv=0.001,
+        delta_improv=delta_improv,
     )
 
     if np.any(neighbor_graph[0] < 0):
