@@ -15,6 +15,7 @@ from .common_nndescent import (
 EPS = 1e-8
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
+INF = np.float32(np.inf)
 
 point_indices_type = numba.int32[::1]
 

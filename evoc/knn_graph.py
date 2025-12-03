@@ -101,6 +101,7 @@ def nn_descent(
     leaf_array=None,
     verbose=False,
     use_sorted_updates=True,
+    delta_improv=None,
 ):
 
     if input_dtype == np.uint8:
@@ -112,6 +113,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
@@ -123,6 +125,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
@@ -136,6 +139,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
@@ -147,6 +151,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
@@ -160,6 +165,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
@@ -171,6 +177,7 @@ def nn_descent(
                 effective_max_candidates,
                 n_iters,
                 delta,
+                delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
