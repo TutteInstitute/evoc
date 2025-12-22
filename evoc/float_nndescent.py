@@ -442,6 +442,8 @@ def init_rp_tree_float(data, current_graph, leaf_array, n_threads):
     )
     updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    n_vertices = current_graph[0].shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
@@ -454,9 +456,6 @@ def init_rp_tree_float(data, current_graph, leaf_array, n_threads):
             updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
         )
 
-        n_vertices = current_graph[0].shape[0]
-        vertex_block_size = n_vertices // n_threads + 1
-
         for t in numba.prange(n_threads):
             block_start = t * vertex_block_size
             block_end = min(block_start + vertex_block_size, n_vertices)
@@ -464,11 +463,12 @@ def init_rp_tree_float(data, current_graph, leaf_array, n_threads):
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
                     p = np.int32(updates[j, k, 0])
+
+                    if p == -1:
+                        continue
+
                     q = np.int32(updates[j, k, 1])
                     d = np.float32(updates[j, k, 2])
-
-                    if p == -1 or q == -1:
-                        continue
 
                     if p >= block_start and p < block_end:
                         flagged_heap_push(
