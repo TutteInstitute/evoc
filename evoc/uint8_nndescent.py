@@ -23,8 +23,6 @@ INF = np.float32(np.inf)
 
 point_indices_type = numba.int32[::1]
 
-_POPCNT = np.asarray([np.uint8(i).bit_count() for i in range(256)], dtype=np.float32)
-
 
 @intrinsic
 def popcnt_u8(typingctx, val):
@@ -240,9 +238,9 @@ def uint8_random_projection_split(data, indices, rng_state):
     right_norm = 0.0
 
     for d in range(dim):
-        hyperplane_norm += _POPCNT[hyperplane_vector[d]]
-        left_norm += _POPCNT[left_data[d]]
-        right_norm += _POPCNT[right_data[d]]
+        hyperplane_norm += popcnt_u8(hyperplane_vector[d])
+        left_norm += popcnt_u8(left_data[d])
+        right_norm += popcnt_u8(right_data[d])
 
     # For each point compute the margin (project into normal vector)
     # If we are on lower side of the hyperplane put in one pile, otherwise
@@ -255,8 +253,8 @@ def uint8_random_projection_split(data, indices, rng_state):
         local_rng_state = rng_state + np.int64(i)
         test_data = data[indices[i]]
         for d in range(dim):
-            margin += _POPCNT[positive_hyperplane_component[d] & test_data[d]]
-            margin -= _POPCNT[negative_hyperplane_component[d] & test_data[d]]
+            margin += popcnt_u8(positive_hyperplane_component[d] & test_data[d])
+            margin -= popcnt_u8(negative_hyperplane_component[d] & test_data[d])
 
         if abs(margin) < EPS:
             side[i] = np.bool_(tau_rand_int(local_rng_state) % 2)
