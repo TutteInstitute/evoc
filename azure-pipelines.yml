@@ -122,7 +122,7 @@ stages:
             pip install -e .
             pip install pytest pytest-azurepipelines
             pip install pytest-cov
-            pip install matplotlib  # For test visualizations
+            pip install matplotlib
           displayName: 'Install pytest'
 
         - script: |
