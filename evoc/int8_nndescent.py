@@ -29,6 +29,8 @@ point_indices_type = numba.int32[::1]
         ),
     ],
     fastmath=True,
+    boundscheck=False,
+    nogil=True,
     locals={
         "result": numba.types.int32,
         "dim": numba.types.intp,
@@ -37,11 +39,11 @@ point_indices_type = numba.int32[::1]
     cache=True,
 )
 def fast_int_inner_product_dissimilarity(x, y):
-    result = 0
+    result = np.int32(0)
     dim = x.shape[0]
 
     for i in range(dim):
-        result += x[i] * y[i]
+        result += np.int32(x[i]) * np.int32(y[i])
 
     return -np.float32(result)
 
