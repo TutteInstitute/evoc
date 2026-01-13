@@ -342,17 +342,15 @@ class TestEvocClusters:
         """Test basic EVoC clustering."""
         X, y_true = simple_embedding_data
 
-        cluster_layers, membership_strengths, persistence_scores, _, _, _ = (
-            evoc_clusters(
-                X,
-                noise_level=0.5,
-                base_min_cluster_size=5,
-                base_n_clusters=2,
-                n_neighbors=10,
-                min_samples=3,
-                n_epochs=20,
-                random_state=np.random.RandomState(42),
-            )
+        cluster_layers, membership_strengths, persistence_scores, _, _ = evoc_clusters(
+            X,
+            noise_level=0.5,
+            base_min_cluster_size=5,
+            base_n_clusters=2,
+            n_neighbors=10,
+            min_samples=3,
+            n_epochs=20,
+            random_state=np.random.RandomState(42),
         )
 
         # Check return types
@@ -370,15 +368,13 @@ class TestEvocClusters:
         """Test EVoC clustering with specified cluster count."""
         X, y_true = simple_embedding_data
 
-        cluster_layers, membership_strengths, persistence_scores, _, _, _ = (
-            evoc_clusters(
-                X,
-                approx_n_clusters=3,
-                n_neighbors=10,
-                min_samples=3,
-                n_epochs=20,
-                random_state=np.random.RandomState(42),
-            )
+        cluster_layers, membership_strengths, persistence_scores, _, _ = evoc_clusters(
+            X,
+            approx_n_clusters=3,
+            n_neighbors=10,
+            min_samples=3,
+            n_epochs=20,
+            random_state=np.random.RandomState(42),
         )
 
         # Should return exactly one layer
@@ -421,7 +417,7 @@ class TestEvocClusters:
         # Normalize like real embeddings
         X_float = X_float / np.linalg.norm(X_float, axis=1, keepdims=True)
 
-        clusters, strengths, persistence_scores, _, _, _ = evoc_clusters(
+        clusters, strengths, persistence_scores, _, _ = evoc_clusters(
             X_float,
             approx_n_clusters=4,
             n_epochs=10,
@@ -432,7 +428,7 @@ class TestEvocClusters:
 
         # Test with int8 data (quantized embeddings)
         X_int8, _ = quantized_embedding_data
-        clusters, strengths, persistence_scores, _, _, _ = evoc_clusters(
+        clusters, strengths, persistence_scores, _, _ = evoc_clusters(
             X_int8,
             approx_n_clusters=3,
             n_epochs=10,
@@ -443,7 +439,7 @@ class TestEvocClusters:
 
         # Test with uint8 data (binary embeddings)
         X_uint8, _ = binary_embedding_data
-        clusters, strengths, persistence_scores, _, _, _ = evoc_clusters(
+        clusters, strengths, persistence_scores, _, _ = evoc_clusters(
             X_uint8,
             approx_n_clusters=3,
             n_epochs=10,
