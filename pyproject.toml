@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evoc"
-version = "0.1.3"
+version = "0.3.0"
 authors = [{name = "Leland McInnes", email = "leland.mcinnes@gmail.com"}]
 maintainers = [{name = "Leland McInnes", email = "leland.mcinnes@gmail.com"}]
 description = "Embedding Vector Oriented Clustering"
