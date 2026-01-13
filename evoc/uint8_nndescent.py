@@ -469,14 +469,24 @@ def generate_leaf_updates_uint8(
 
 
 @numba.njit(
-    numba.void(
-        numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
-        numba.types.Tuple(
-            (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+    [
+        numba.void(
+            numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
+            numba.types.Tuple(
+                (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+            ),
+            numba.types.NoneType,
+            numba.types.int32,
         ),
-        numba.types.Array(numba.types.int32, 2, "C", readonly=True),
-        numba.types.int32,
-    ),
+        numba.void(
+            numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
+            numba.types.Tuple(
+                (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+            ),
+            numba.types.Array(numba.types.int32, 2, "C", readonly=True),
+            numba.types.int32,
+        ),
+    ],
     locals={
         "d": numba.float32,
         "p": numba.int32,
