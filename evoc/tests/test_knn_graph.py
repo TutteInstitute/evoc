@@ -236,13 +236,16 @@ class TestNNDescent:
         rng_state = np.random.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
         n_neighbors = 5
 
-        with patch("evoc.knn_graph.nn_descent_float") as mock_nn_descent:
+        with patch("evoc.float_nndescent.nn_descent_float") as mock_nn_descent:
             # Mock return value: (indices, distances)
             mock_indices = np.random.randint(
                 0, len(float_data), size=(len(float_data), n_neighbors)
             )
             mock_distances = -np.random.exponential(
                 1, size=(len(float_data), n_neighbors)
+            )
+            leaf_array = np.random.randint(
+                0, float_data.shape[0], size=(4, len(float_data)), dtype=np.int32
             )
             mock_nn_descent.return_value = (mock_indices, mock_distances)
 
@@ -254,6 +257,7 @@ class TestNNDescent:
                 5,
                 0.001,
                 np.float32,
+                leaf_array=leaf_array,
                 verbose=False,
             )
 
@@ -268,17 +272,28 @@ class TestNNDescent:
         rng_state = np.random.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
         n_neighbors = 5
 
-        with patch("evoc.knn_graph.nn_descent_uint8") as mock_nn_descent:
+        with patch("evoc.uint8_nndescent.nn_descent_uint8") as mock_nn_descent:
             mock_indices = np.random.randint(
                 0, len(uint8_data), size=(len(uint8_data), n_neighbors)
             )
             mock_distances = -np.random.exponential(
                 1, size=(len(uint8_data), n_neighbors)
             )
+            leaf_array = np.random.randint(
+                0, uint8_data.shape[0], size=(4, len(uint8_data)), dtype=np.int32
+            )
             mock_nn_descent.return_value = (mock_indices, mock_distances)
 
             result = nn_descent(
-                uint8_data, n_neighbors, rng_state, 30, 5, 0.001, np.uint8, verbose=True
+                uint8_data,
+                n_neighbors,
+                rng_state,
+                30,
+                5,
+                0.001,
+                np.uint8,
+                leaf_array=leaf_array,
+                verbose=True,
             )
 
             assert len(result) == 2
@@ -291,7 +306,7 @@ class TestNNDescent:
         rng_state = np.random.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
         n_neighbors = 5
 
-        with patch("evoc.knn_graph.nn_descent_int8") as mock_nn_descent:
+        with patch("evoc.int8_nndescent.nn_descent_int8") as mock_nn_descent:
             mock_indices = np.random.randint(
                 0, len(int8_data), size=(len(int8_data), n_neighbors)
             )
@@ -299,9 +314,19 @@ class TestNNDescent:
                 1, size=(len(int8_data), n_neighbors)
             )
             mock_nn_descent.return_value = (mock_indices, mock_distances)
+            leaf_array = np.random.randint(
+                0, int8_data.shape[0], size=(4, len(int8_data)), dtype=np.int32
+            )
 
             result = nn_descent(
-                int8_data, n_neighbors, rng_state, 30, 5, 0.001, np.int8
+                int8_data,
+                n_neighbors,
+                rng_state,
+                30,
+                5,
+                0.001,
+                np.int8,
+                leaf_array=leaf_array,
             )
 
             assert len(result) == 2
