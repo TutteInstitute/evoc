@@ -236,6 +236,7 @@ def knn_graph(
         llvmlite_version = "not installed"
     print(f"[KNN_GRAPH] Numba version: {getattr(numba, '__version__', 'unknown')}")
     print(f"[KNN_GRAPH] llvmlite version: {llvmlite_version}")
+    print("[KNN_GRAPH] Numba threading layer:", numba.threading_layer())
     _original_num_threads = numba.get_num_threads()
     print(f"[KNN_GRAPH] Initial numba.get_num_threads(): {_original_num_threads}")
     if n_jobs != -1 and n_jobs is not None:
