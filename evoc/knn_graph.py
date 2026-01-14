@@ -226,9 +226,24 @@ def knn_graph(
     rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
     # Set threading constraints
+    import sys
+
+    try:
+        import llvmlite
+
+        llvmlite_version = getattr(llvmlite, "__version__", "unknown")
+    except ImportError:
+        llvmlite_version = "not installed"
+    print(f"[KNN_GRAPH] Numba version: {getattr(numba, '__version__', 'unknown')}")
+    print(f"[KNN_GRAPH] llvmlite version: {llvmlite_version}")
     _original_num_threads = numba.get_num_threads()
+    print(f"[KNN_GRAPH] Initial numba.get_num_threads(): {_original_num_threads}")
     if n_jobs != -1 and n_jobs is not None:
+        print(f"[KNN_GRAPH] Setting numba threads to n_jobs={n_jobs}")
         numba.set_num_threads(n_jobs)
+        print(
+            f"[KNN_GRAPH] numba.get_num_threads() after set: {numba.get_num_threads()}"
+        )
 
     if n_trees is None:
         n_trees = numba.get_num_threads()
@@ -278,5 +293,12 @@ def knn_graph(
             " different parameters."
         )
 
-    numba.set_num_threads(_original_num_threads)
+    if n_jobs != -1 and n_jobs is not None:
+        print(
+            f"[KNN_GRAPH] Restoring numba threads to original: {_original_num_threads}"
+        )
+        numba.set_num_threads(_original_num_threads)
+        print(
+            f"[KNN_GRAPH] numba.get_num_threads() after restore: {numba.get_num_threads()}"
+        )
     return neighbor_graph
