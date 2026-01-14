@@ -149,6 +149,7 @@ stages:
             echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
             ls -l $(brew --prefix tbb)/lib
             brew install libomp
+            pip install intel-openmp
             export NUMBA_THREADING_LAYER=omp
             export DYLD_LIBRARY_PATH="/usr/local/opt/libomp/lib:$DYLD_LIBRARY_PATH"
             export LD_LIBRARY_PATH="/usr/local/opt/libomp/lib:$LD_LIBRARY_PATH"
