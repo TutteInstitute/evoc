@@ -14,6 +14,7 @@ from .common_nndescent import (
     apply_graph_update_array,
     apply_sorted_graph_updates,
 )
+from .nested_parallelism import ENABLE_NESTED_PARALLELISM
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
@@ -357,7 +358,7 @@ def make_uint8_tree(
     ),
     nogil=True,
     locals={"n_leaves": numba.uint32, "i": numba.uint32},
-    parallel=True,
+    parallel=ENABLE_NESTED_PARALLELISM,
     cache=False,
 )
 def make_uint8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):

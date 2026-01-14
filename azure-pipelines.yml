@@ -104,16 +104,6 @@ stages:
           displayName: 'Configure LLVM Environment Variables (macOS only)'
           condition: eq(variables['Agent.OS'], 'Darwin')
 
-        # 3. Install TBB via Homebrew on macOS
-        - script: |
-            brew update
-            brew install tbb
-            echo "TBB installed at: $(brew --prefix tbb)"
-            ls -l $(brew --prefix tbb)/lib
-            sudo ln -sf $(brew --prefix tbb)/lib/libtbb* /usr/local/lib/
-            ls -l /usr/local/lib/libtbb*
-          displayName: 'Install TBB (macOS only)'
-          condition: eq(variables['Agent.OS'], 'Darwin')
 
         - script: |
             pip install -e .
@@ -142,17 +132,6 @@ stages:
           condition: ne(variables['Agent.OS'], 'Darwin')
 
         - script: |
-            export DYLD_LIBRARY_PATH=$(brew --prefix tbb)/lib:$DYLD_LIBRARY_PATH
-            export LD_LIBRARY_PATH=$(brew --prefix tbb)/lib:$LD_LIBRARY_PATH
-            export NUMBA_THREADING_LAYER=tbb
-            echo "DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
-            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-            ls -l $(brew --prefix tbb)/lib
-            brew install libomp
-            pip install intel-openmp
-            export NUMBA_THREADING_LAYER=omp
-            export DYLD_LIBRARY_PATH="/usr/local/opt/libomp/lib:$DYLD_LIBRARY_PATH"
-            export LD_LIBRARY_PATH="/usr/local/opt/libomp/lib:$LD_LIBRARY_PATH"
             pytest evoc/tests -v --capture=tee-sys --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
           condition: eq(variables['Agent.OS'], 'Darwin')
