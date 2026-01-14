@@ -128,7 +128,12 @@ stages:
         - script: |
             pytest evoc/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
+          condition: ne(variables['Agent.OS'], 'Darwin')
 
+        - script: |
+            pytest evoc/tests -v --capture=tee-sys --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
+          displayName: 'Run tests'
+          condition: eq(variables['Agent.OS'], 'Darwin')
 
         - task: PublishTestResults@2
           inputs:
