@@ -447,7 +447,7 @@ class TestKNNGraph:
 
             # Test with n_jobs=-1 (should not change threads)
             knn_graph(float_test_data, n_jobs=-1, random_state=42)
-            mock_set_threads.assert_called()
+            mock_set_threads.assert_not_called()
 
             # Test with specific n_jobs
             knn_graph(float_test_data, n_jobs=4, random_state=42)
