@@ -142,7 +142,11 @@ stages:
         - script: |
             pip install tbb
             export DYLD_LIBRARY_PATH=$(brew --prefix tbb)/lib:$DYLD_LIBRARY_PATH
+            export LD_LIBRARY_PATH=$(brew --prefix tbb)/lib:$LD_LIBRARY_PATH
             export NUMBA_THREADING_LAYER=tbb
+            echo "DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            ls -l $(brew --prefix tbb)/lib
             pytest evoc/tests -v --capture=tee-sys --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
           condition: eq(variables['Agent.OS'], 'Darwin')
