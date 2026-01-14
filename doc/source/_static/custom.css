@@ -1,0 +1,92 @@
+/* Custom CSS for EVoC documentation */
+
+/* Improve code block styling */
+.highlight {
+    background-color: #f8f8f8;
+    border: 1px solid #e1e4e5;
+    border-radius: 4px;
+    padding: 8px;
+    margin: 12px 0;
+}
+
+/* Better parameter list formatting */
+.field-list {
+    margin: 1em 0;
+}
+
+.field-list dt {
+    font-weight: bold;
+    color: #2980b9;
+}
+
+/* Notebook cell styling */
+.nbinput .highlight,
+.nboutput .highlight {
+    border-left: 4px solid #1f8c8c;
+    margin: 0.5em 0;
+}
+
+/* API documentation improvements */
+.py.class dt {
+    background-color: #f0f0f0;
+    border-left: 4px solid #3498db;
+    padding: 8px;
+    margin-top: 20px;
+}
+
+.py.method dt {
+    background-color: #f9f9f9;
+    border-left: 3px solid #95a5a6;
+    padding: 6px;
+    margin-top: 15px;
+}
+
+/* Parameter tables */
+.docutils th {
+    background-color: #34495e;
+    color: white;
+    padding: 8px;
+}
+
+.docutils td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #ecf0f1;
+}
+
+/* Admonition improvements */
+.admonition {
+    margin: 20px 0;
+    padding: 15px;
+    border-radius: 6px;
+}
+
+.admonition.note {
+    background-color: #e8f4fd;
+    border-left: 4px solid #3498db;
+}
+
+.admonition.warning {
+    background-color: #fdf4e8;
+    border-left: 4px solid #f39c12;
+}
+
+/* Code span improvements */
+code.literal {
+    background-color: #f1f2f3;
+    color: #e74c3c;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 90%;
+}
+
+/* Sidebar improvements */
+.wy-nav-side {
+    background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
+}
+
+/* Footer customization */
+.rst-footer-buttons {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #e1e4e5;
+}

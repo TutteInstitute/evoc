@@ -1,4 +1,4 @@
-.. image:: doc/evoc_logo.png
+.. image:: doc/evoc_logo_horizontal.png
   :width: 600
   :align: center
   :alt: EVōC Logo
@@ -7,7 +7,7 @@
 EVōC
 ====
 
-EVōC (pronounced as "evoke") is Embedding Vector Oriented Clustering.
+EVōC (pronounced as "evoke") provides Embedding Vector Oriented Clustering.
 EVōC is a library for fast and flexible clustering of large datasets of high dimensional embedding vectors. 
 If you have CLIP-vectors, outputs from sentence-transformers, or openAI, or Cohere embed, and you want
 to quickly get good clusters out this is the library for you. EVōC takes all the good parts of the 
