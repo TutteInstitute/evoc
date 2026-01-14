@@ -87,7 +87,6 @@ stages:
             brew install llvm@20
             # Homebrew formula names can change, so we ensure it links correctly if necessary
             brew link --force --overwrite llvm@20
-            brew install tbb
           displayName: 'Install LLVM via Homebrew (macOS only)'
           condition: eq(variables['Agent.OS'], 'Darwin')
 
@@ -132,6 +131,7 @@ stages:
           condition: ne(variables['Agent.OS'], 'Darwin')
 
         - script: |
+            pip install tbb
             export NUMBA_THREADING_LAYER=tbb
             pytest evoc/tests -v --capture=tee-sys --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
