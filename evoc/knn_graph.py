@@ -5,9 +5,17 @@ import time
 from sklearn.utils import check_array, check_random_state
 
 from warnings import warn
-from .float_nndescent import make_float_forest, nn_descent_float
-from .uint8_nndescent import make_uint8_forest, nn_descent_uint8
-from .int8_nndescent import make_int8_forest, nn_descent_int8
+from .float_nndescent import (
+    make_float_forest,
+    nn_descent_float,
+    nn_descent_float_sorted,
+)
+from .uint8_nndescent import (
+    make_uint8_forest,
+    nn_descent_uint8,
+    nn_descent_uint8_sorted,
+)
+from .int8_nndescent import make_int8_forest, nn_descent_int8, nn_descent_int8_sorted
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -92,43 +100,86 @@ def nn_descent(
     input_dtype,
     leaf_array=None,
     verbose=False,
+    use_sorted_updates=True,
+    delta_improv=None,
 ):
-
     if input_dtype == np.uint8:
-        neighbor_graph = nn_descent_uint8(
-            data,
-            n_neighbors,
-            rng_state,
-            effective_max_candidates,
-            n_iters,
-            delta,
-            leaf_array=leaf_array,
-            verbose=verbose,
-        )
+        if use_sorted_updates:
+            neighbor_graph = nn_descent_uint8_sorted(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
+        else:
+            neighbor_graph = nn_descent_uint8(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
         neighbor_graph[1][:] = -np.log2(-neighbor_graph[1])
     elif input_dtype == np.int8:
-        neighbor_graph = nn_descent_int8(
-            data,
-            n_neighbors,
-            rng_state,
-            effective_max_candidates,
-            n_iters,
-            delta,
-            leaf_array=leaf_array,
-            verbose=verbose,
-        )
+        if use_sorted_updates:
+            neighbor_graph = nn_descent_int8_sorted(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
+        else:
+            neighbor_graph = nn_descent_int8(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
         neighbor_graph[1][:] = 1.0 / (-neighbor_graph[1])
     else:
-        neighbor_graph = nn_descent_float(
-            data,
-            n_neighbors,
-            rng_state,
-            effective_max_candidates,
-            n_iters,
-            delta,
-            leaf_array=leaf_array,
-            verbose=verbose,
-        )
+        if use_sorted_updates:
+            neighbor_graph = nn_descent_float_sorted(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
+        else:
+            neighbor_graph = nn_descent_float(
+                data,
+                n_neighbors,
+                rng_state,
+                effective_max_candidates,
+                n_iters,
+                delta,
+                delta_improv=delta_improv,
+                leaf_array=leaf_array,
+                verbose=verbose,
+            )
         neighbor_graph[1][:] = np.maximum(-np.log2(-neighbor_graph[1]), 0.0)
 
     return neighbor_graph
@@ -144,8 +195,10 @@ def knn_graph(
     max_rptree_depth=200,
     n_iters=None,
     delta=0.001,
+    delta_improv=0.001,
     n_jobs=None,
     verbose=False,
+    use_sorted_updates=True,
 ):
     if data.dtype == np.uint8:
         data = check_array(data, dtype=np.uint8, order="C")
@@ -164,7 +217,7 @@ def knn_graph(
             data = np.ascontiguousarray(data, dtype=np.float32)
         else:
             # Efficiently create a modifiable float32 C-contiguous copy
-            data = np.array(data, dtype=np.float32, order='C', copy=True)
+            data = np.array(data, dtype=np.float32, order="C", copy=True)
             data /= norms[:, np.newaxis]
         _input_dtype = np.float32
         _bit_trees = False
@@ -214,6 +267,8 @@ def knn_graph(
         _input_dtype,
         leaf_array=leaf_array,
         verbose=verbose,
+        use_sorted_updates=use_sorted_updates,
+        delta_improv=delta_improv,
     )
 
     if np.any(neighbor_graph[0] < 0):
@@ -223,5 +278,6 @@ def knn_graph(
             " different parameters."
         )
 
-    numba.set_num_threads(_original_num_threads)
+    if n_jobs != -1 and n_jobs is not None:
+        numba.set_num_threads(_original_num_threads)
     return neighbor_graph

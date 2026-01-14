@@ -8,12 +8,15 @@ from .common_nndescent import (
     flagged_heap_push,
     build_candidates,
     apply_graph_update_array,
+    apply_sorted_graph_updates,
 )
+from .nested_parallelism import ENABLE_NESTED_PARALLELISM
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
+INF = np.float32(np.inf)
 
 point_indices_type = numba.int32[::1]
 
@@ -27,26 +30,30 @@ point_indices_type = numba.int32[::1]
         ),
     ],
     fastmath=True,
+    boundscheck=False,
+    nogil=True,
     locals={
-        "result": numba.types.float32,
+        "result": numba.types.int32,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
     cache=True,
 )
 def fast_int_inner_product_dissimilarity(x, y):
-    result = 0.0
+    result = np.int32(0)
     dim = x.shape[0]
 
     for i in range(dim):
-        result += x[i] * y[i]
+        result += np.int32(x[i]) * np.int32(y[i])
 
-    return -result
+    return -np.float32(result)
 
 
 @numba.njit(
     numba.types.Tuple((numba.int32[::1], numba.int32[::1]))(
-        numba.types.Array(numba.types.int8, 2, "C", readonly=True), numba.int32[::1], numba.int64[::1]
+        numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.int32[::1],
+        numba.int64[::1],
     ),
     locals={
         "n_left": numba.uint32,
@@ -243,7 +250,7 @@ def make_int8_tree(
     ),
     nogil=True,
     locals={"n_leaves": numba.uint32, "i": numba.uint32},
-    parallel=True,
+    parallel=ENABLE_NESTED_PARALLELISM,
     cache=False,
 )
 def make_int8_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
@@ -355,14 +362,18 @@ def generate_leaf_updates_int8(
 
 
 @numba.njit(
-    numba.void(
-        numba.types.Array(numba.types.int8, 2, "C", readonly=True),
-        numba.types.Tuple(
-            (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+    [
+        numba.void(
+            numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+            numba.types.Tuple(
+                (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
+            ),
+            numba.types.optional(
+                numba.types.Array(numba.types.int32, 2, "C", readonly=True)
+            ),
+            numba.types.int32,
         ),
-        numba.types.Array(numba.types.int32, 2, "C", readonly=True),
-        numba.types.int32,
-    ),
+    ],
     locals={
         "d": numba.float32,
         "p": numba.int32,
@@ -377,7 +388,7 @@ def generate_leaf_updates_int8(
 def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
 
     n_leaves = leaf_array.shape[0]
-    block_size = 64
+    block_size = n_threads * 64
     n_blocks = n_leaves // block_size
 
     max_leaf_size = leaf_array.shape[1]
@@ -398,7 +409,13 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
             updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
         )
 
+        n_vertices = current_graph[0].shape[0]
+        vertex_block_size = n_vertices // n_threads + 1
+
         for t in numba.prange(n_threads):
+            block_start = t * vertex_block_size
+            block_end = min(block_start + vertex_block_size, n_vertices)
+
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
                     p = np.int32(updates[j, k, 0])
@@ -408,7 +425,7 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
                     if p == -1 or q == -1:
                         continue
 
-                    if p % n_threads == t:
+                    if p >= block_start and p < block_end:
                         flagged_heap_push(
                             current_graph[1][p],
                             current_graph[0][p],
@@ -416,7 +433,7 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
                             d,
                             q,
                         )
-                    if q % n_threads == t:
+                    if q >= block_start and q < block_end:
                         flagged_heap_push(
                             current_graph[1][q],
                             current_graph[0][q],
@@ -539,6 +556,153 @@ def generate_graph_update_array_int8(
         n_updates_per_thread[t] = idx
 
 
+@numba.njit(
+    numba.void(
+        numba.float32[:, :, ::1],
+        numba.int32[:, ::1],
+        numba.int32[:, ::1],
+        numba.int32[:, ::1],
+        numba.float32[:],
+        numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.int64,
+    ),
+    locals={
+        "data_p": numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        "dist_thresh_p": numba.float32,
+        "dist_thresh_q": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "max_updates": numba.intp,
+        "max_threshold": numba.float32,
+        "p_block": numba.int32,
+        "q_block": numba.int32,
+    },
+    parallel=True,
+    cache=True,
+    boundscheck=False,
+)
+def generate_sorted_graph_update_array_int8(
+    update_array,
+    n_updates_per_block,
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    data,
+    n_threads,
+):
+    """
+    Generate graph updates pre-sorted by target block for int8 data.
+    """
+    block_size_candidates = new_candidate_block.shape[0]
+    max_new_candidates = new_candidate_block.shape[1]
+    max_old_candidates = old_candidate_block.shape[1]
+    rows_per_thread = (block_size_candidates // n_threads) + 1
+
+    n_vertices = data.shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
+    max_updates = update_array.shape[1]
+    max_updates_per_src_thread = max_updates // n_threads
+
+    # Reset update counts
+    for b in numba.prange(n_threads):
+        for t in range(n_threads + 1):
+            n_updates_per_block[b, t] = 0
+
+    # Each thread generates updates and places them in appropriate buckets
+    for t in numba.prange(n_threads):
+        # Thread-local counters for each bucket
+        local_counts = np.zeros(n_threads, dtype=np.int32)
+
+        for r in range(rows_per_thread):
+            i = t * rows_per_thread + r
+            if i >= block_size_candidates:
+                break
+
+            for j in range(max_new_candidates):
+                p = new_candidate_block[i, j]
+                if p < 0:
+                    continue
+
+                data_p = data[p]
+                dist_thresh_p = dist_thresholds[p]
+                p_block = p // vertex_block_size
+                if p_block >= n_threads:
+                    p_block = n_threads - 1
+
+                # Compare with other new candidates
+                for k in range(j, max_new_candidates):
+                    q = new_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        q_block = q // vertex_block_size
+                        if q_block >= n_threads:
+                            q_block = n_threads - 1
+
+                        # Place update in p's bucket
+                        bucket_idx = local_counts[p_block]
+                        write_idx = t * max_updates_per_src_thread + bucket_idx
+                        if write_idx < max_updates:
+                            update_array[p_block, write_idx, 0] = p
+                            update_array[p_block, write_idx, 1] = q
+                            update_array[p_block, write_idx, 2] = d
+                            local_counts[p_block] += 1
+
+                        # If q is in a different block, also place in q's bucket
+                        if q_block != p_block:
+                            bucket_idx = local_counts[q_block]
+                            write_idx = t * max_updates_per_src_thread + bucket_idx
+                            if write_idx < max_updates:
+                                update_array[q_block, write_idx, 0] = p
+                                update_array[q_block, write_idx, 1] = q
+                                update_array[q_block, write_idx, 2] = d
+                                local_counts[q_block] += 1
+
+                # Compare with old candidates
+                for k in range(max_old_candidates):
+                    q = old_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        q_block = q // vertex_block_size
+                        if q_block >= n_threads:
+                            q_block = n_threads - 1
+
+                        # Place update in p's bucket
+                        bucket_idx = local_counts[p_block]
+                        write_idx = t * max_updates_per_src_thread + bucket_idx
+                        if write_idx < max_updates:
+                            update_array[p_block, write_idx, 0] = p
+                            update_array[p_block, write_idx, 1] = q
+                            update_array[p_block, write_idx, 2] = d
+                            local_counts[p_block] += 1
+
+                        # If q is in a different block, also place in q's bucket
+                        if q_block != p_block:
+                            bucket_idx = local_counts[q_block]
+                            write_idx = t * max_updates_per_src_thread + bucket_idx
+                            if write_idx < max_updates:
+                                update_array[q_block, write_idx, 0] = p
+                                update_array[q_block, write_idx, 1] = q
+                                update_array[q_block, write_idx, 2] = d
+                                local_counts[q_block] += 1
+
+        # Record total updates generated by this thread for each bucket
+        for b in range(n_threads):
+            n_updates_per_block[b, t + 1] = local_counts[b]
+
+
 def nn_descent_int8(
     data,
     n_neighbors,
@@ -546,9 +710,32 @@ def nn_descent_int8(
     max_candidates=50,
     n_iters=10,
     delta=0.001,
+    delta_improv=None,
     leaf_array=None,
     verbose=False,
 ):
+    """
+    Perform approximate nearest neighbor descent algorithm using int8 data.
+
+    Parameters:
+    - data: The input data array.
+    - n_neighbors: The number of nearest neighbors to search for.
+    - rng_state: The random number generator state.
+    - max_candidates: The maximum number of candidates to consider during the search. Default is 50.
+    - n_iters: The number of iterations to perform. Default is 10.
+    - delta: The stopping threshold based on update count. Default is 0.001.
+    - delta_improv: Optional stopping threshold based on relative improvement in total
+        graph distance. When set (e.g., 0.001 for 0.1%), the algorithm will also
+        terminate when the relative improvement in sum of all distances drops below
+        this threshold. This can provide earlier termination on data with good
+        structure, adapting to the intrinsic difficulty of the dataset. Default is None
+        (disabled).
+    - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
+    - verbose: Whether to print progress information. Default is False.
+
+    Returns:
+    - The sorted nearest neighbor graph.
+    """
     n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
     init_rp_tree_int8(data, current_graph, leaf_array, n_threads)
@@ -560,10 +747,13 @@ def nn_descent_int8(
     n_blocks = n_vertices // block_size
 
     max_updates_per_thread = int(
-        ((max_candidates ** 2 + max_candidates * (max_candidates - 1) / 2) * block_size)
+        ((max_candidates**2 + max_candidates * (max_candidates - 1) / 2) * block_size)
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
+    # For distance-based termination
+    prev_sum_dist = None
 
     for n in range(n_iters):
         if verbose:
@@ -598,10 +788,151 @@ def nn_descent_int8(
                 current_graph, update_array, n_updates_per_thread, n_threads
             )
 
+        # Check update count termination
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
                 print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return deheap_sort(current_graph[0], current_graph[1])
+
+        # Check distance improvement termination (if enabled)
+        if delta_improv is not None:
+            all_distances = current_graph[1]
+            valid_mask = all_distances < INF
+            sum_dist = np.sum(all_distances[valid_mask])
+
+            if prev_sum_dist is not None:
+                rel_improv = abs(sum_dist - prev_sum_dist) / abs(prev_sum_dist)
+                if rel_improv < delta_improv:
+                    if verbose:
+                        print(
+                            f"\tDistance improvement threshold met ({rel_improv:.4%} < {delta_improv:.4%})"
+                            f" -- exiting after {n + 1} iterations"
+                        )
+                    return deheap_sort(current_graph[0], current_graph[1])
+
+            prev_sum_dist = sum_dist
+
+        block_size = min(n_vertices, 2 * block_size)
+        n_blocks = n_vertices // block_size
+
+    return deheap_sort(current_graph[0], current_graph[1])
+
+
+def nn_descent_int8_sorted(
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    n_iters=10,
+    delta=0.001,
+    delta_improv=None,
+    leaf_array=None,
+    verbose=False,
+):
+    """
+    Perform approximate nearest neighbor descent algorithm using int8 data.
+
+    This version uses pre-sorted updates bucketed by target block for potentially
+    better performance when n_threads is large.
+
+    Parameters:
+    - data: The input data array.
+    - n_neighbors: The number of nearest neighbors to search for.
+    - rng_state: The random number generator state.
+    - max_candidates: The maximum number of candidates to consider during the search. Default is 50.
+    - n_iters: The number of iterations to perform. Default is 10.
+    - delta: The stopping threshold based on update count. Default is 0.001.
+    - delta_improv: Optional stopping threshold based on relative improvement in total
+        graph distance. When set (e.g., 0.001 for 0.1%), the algorithm will also
+        terminate when the relative improvement in sum of all distances drops below
+        this threshold. This can provide earlier termination on data with good
+        structure, adapting to the intrinsic difficulty of the dataset. Default is None
+        (disabled).
+    - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
+    - verbose: Whether to print progress information. Default is False.
+
+    Returns:
+    - The sorted nearest neighbor graph.
+    """
+    n_threads = numba.get_num_threads()
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    init_rp_tree_int8(data, current_graph, leaf_array, n_threads)
+    init_random_int8(n_neighbors, data, current_graph, rng_state)
+
+    n_vertices = data.shape[0]
+    n_threads = numba.get_num_threads()
+    block_size = 65536 // n_threads
+    n_blocks = n_vertices // block_size
+
+    max_updates_per_thread = int(
+        ((max_candidates**2 + max_candidates * (max_candidates - 1) / 2) * block_size)
+    )
+    sorted_update_array = np.empty(
+        (n_threads, max_updates_per_thread, 3), dtype=np.float32
+    )
+    n_updates_per_block = np.zeros((n_threads, n_threads + 1), dtype=np.int32)
+
+    # For distance-based termination
+    prev_sum_dist = None
+
+    for n in range(n_iters):
+        if verbose:
+            print("\t", n + 1, " / ", n_iters)
+
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
+            current_graph, max_candidates, rng_state, n_threads
+        )
+
+        c = 0
+        n_vertices = new_candidate_neighbors.shape[0]
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
+
+            new_candidate_block = new_candidate_neighbors[block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[block_start:block_end]
+
+            dist_thresholds = current_graph[1][:, 0]
+
+            n_updates_per_block.fill(0)
+
+            generate_sorted_graph_update_array_int8(
+                sorted_update_array,
+                n_updates_per_block,
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                n_threads,
+            )
+
+            c += apply_sorted_graph_updates(
+                current_graph, sorted_update_array, n_updates_per_block, n_threads
+            )
+
+        # Check update count termination
+        if c <= delta * n_neighbors * data.shape[0]:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
+            return deheap_sort(current_graph[0], current_graph[1])
+
+        # Check distance improvement termination (if enabled)
+        if delta_improv is not None:
+            all_distances = current_graph[1]
+            valid_mask = all_distances < INF
+            sum_dist = np.sum(all_distances[valid_mask])
+
+            if prev_sum_dist is not None:
+                rel_improv = abs(sum_dist - prev_sum_dist) / abs(prev_sum_dist)
+                if rel_improv < delta_improv:
+                    if verbose:
+                        print(
+                            f"\tDistance improvement threshold met ({rel_improv:.4%} < {delta_improv:.4%})"
+                            f" -- exiting after {n + 1} iterations"
+                        )
+                    return deheap_sort(current_graph[0], current_graph[1])
+
+            prev_sum_dist = sum_dist
 
         block_size = min(n_vertices, 2 * block_size)
         n_blocks = n_vertices // block_size

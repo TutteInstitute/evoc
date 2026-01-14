@@ -82,8 +82,35 @@ stages:
             python -m pip install --upgrade pip
           displayName: 'Upgrade pip'
 
+        # 1. Install the full LLVM package only if the OS is macOS
+        - script: |
+            brew install llvm@20
+            # Homebrew formula names can change, so we ensure it links correctly if necessary
+            brew link --force --overwrite llvm@20
+          displayName: 'Install LLVM via Homebrew (macOS only)'
+          condition: eq(variables['Agent.OS'], 'Darwin')
+
+        # 2. Find the Homebrew install path and set the environment variable only on macOS
+        - script: |
+            # Determine the LLVM install prefix dynamically
+            LLVM_PREFIX=$(brew --prefix llvm@20)
+
+            # Set the LLVM_CONFIG environment variable used by llvmlite's build script
+            echo "##vso[task.setvariable variable=LLVM_CONFIG]$LLVM_PREFIX/bin/llvm-config"
+            echo "LLVM_CONFIG set to: $LLVM_CONFIG"
+
+            # Also set CMAKE_PREFIX_PATH in case other dependencies need it
+            echo "##vso[task.setvariable variable=CMAKE_PREFIX_PATH]$LLVM_PREFIX/lib/cmake"
+          displayName: 'Configure LLVM Environment Variables (macOS only)'
+          condition: eq(variables['Agent.OS'], 'Darwin')
+
+
         - script: |
             pip install -e .
+          env:
+            # Ensure that the LLVM_CONFIG environment variable is available during installation
+            LLVM_CONFIG: $(LLVM_CONFIG)
+            CMAKE_PREFIX_PATH: $(CMAKE_PREFIX_PATH)
           displayName: 'Install dependencies'
           condition: ${{ eq(parameters.includeReleaseCandidates, false) }}
 
@@ -96,12 +123,18 @@ stages:
             pip install -e .
             pip install pytest pytest-azurepipelines
             pip install pytest-cov
+            pip install matplotlib
           displayName: 'Install pytest'
 
         - script: |
             pytest evoc/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
+          condition: ne(variables['Agent.OS'], 'Darwin')
 
+        - script: |
+            pytest evoc/tests -v --capture=tee-sys --disable-warnings --junitxml=junit/test-results.xml --cov=evoc/ --cov-report=xml --cov-report=html
+          displayName: 'Run tests'
+          condition: eq(variables['Agent.OS'], 'Darwin')
 
         - task: PublishTestResults@2
           inputs:
