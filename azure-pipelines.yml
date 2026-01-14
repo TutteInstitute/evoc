@@ -110,6 +110,8 @@ stages:
             brew install tbb
             echo "TBB installed at: $(brew --prefix tbb)"
             ls -l $(brew --prefix tbb)/lib
+            sudo ln -sf $(brew --prefix tbb)/lib/libtbb* /usr/local/lib/
+            ls -l /usr/local/lib/libtbb*
           displayName: 'Install TBB (macOS only)'
           condition: eq(variables['Agent.OS'], 'Darwin')
 
