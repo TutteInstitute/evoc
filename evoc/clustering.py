@@ -267,6 +267,12 @@ def evoc_clusters(
         The membership strengths of each point in the clustering at each layer.
         This gives a measure of how strongly each point belongs to each cluster.
 
+    nn_inds : array-like of shape (n_samples, n_neighbors)
+        Indices of nearest neighbors for each sample.
+
+    nn_dists : array-like of shape (n_samples, n_neighbors)
+        Distance from each sample to each nearest neighbor indexed by nn_inds
+
     duplicates : set of tuple of int
         Only returned in ``return_duplicates`` is True. A set of pairs of indices of
         potential duplicate points in the data.
@@ -322,9 +328,9 @@ def evoc_clusters(
             min_samples=min_samples,
         )
         if return_duplicates:
-            return [cluster_vector], [strengths], [0.0], duplicates
+            return [cluster_vector], [strengths], [0.0], nn_inds, nn_dists, duplicates
         else:
-            return [cluster_vector], [strengths], [0.0]
+            return [cluster_vector], [strengths], [0.0], nn_inds, nn_dists
     else:
         cluster_layers, membership_strengths, persistence_scores = build_cluster_layers(
             embedding,
@@ -337,9 +343,22 @@ def evoc_clusters(
         )
 
         if return_duplicates:
-            return cluster_layers, membership_strengths, persistence_scores, duplicates
+            return (
+                cluster_layers,
+                membership_strengths,
+                persistence_scores,
+                nn_inds,
+                nn_dists,
+                duplicates,
+            )
         else:
-            return cluster_layers, membership_strengths, persistence_scores
+            return (
+                cluster_layers,
+                membership_strengths,
+                persistence_scores,
+                nn_inds,
+                nn_dists,
+            )
 
 
 class EVoC(BaseEstimator, ClusterMixin):
@@ -459,6 +478,12 @@ class EVoC(BaseEstimator, ClusterMixin):
         tuples of (layer, cluster) and the values are lists of tuples of (layer, cluster)
         representing the children of the key cluster.
 
+    nn_inds_ : array-like of shape (n_samples, n_neighbors)
+        Indices of nearest neighbors for each sample.
+
+    nn_dists_ : array-like of shape (n_samples, n_neighbors)
+        Distance from each sample to each nearest neighbor (indexed by nn_inds).
+
     duplicates_ : set of tuple of int
         A set of pairs of indices of potential duplicate points in the data.
     """
@@ -531,6 +556,8 @@ class EVoC(BaseEstimator, ClusterMixin):
             self.cluster_layers_,
             self.membership_strength_layers_,
             self.persistence_scores_,
+            self.nn_inds_,
+            self.nn_dists_,
             self.duplicates_,
         ) = evoc_clusters(
             X,
