@@ -83,13 +83,11 @@ You can install EVōC from PyPI using pip:
 
     pip install evoc
 
-To install the latest version of EVōC from source you can do so by cloning the repository and running:
+To install the latest version of EVōC from source:
 
 .. code-block:: bash
 
-    git clone https://github.com/TutteInstitute/evoc
-    cd evoc
-    pip install .
+    pip install git+https://github.com/TutteInstitute/evoc.git
 
 -------
 License
