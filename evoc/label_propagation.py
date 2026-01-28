@@ -116,7 +116,7 @@ def label_outliers(indptr, indices, labels, rng_state):
             unlabelled = True
             n_iter = 0
 
-            while unlabelled and n_iter < 64:
+            while unlabelled and n_iter < 64 and len(node_queue) > 0:
 
                 n_iter += 1
                 current_node = node_queue.pop()
@@ -129,7 +129,7 @@ def label_outliers(indptr, indices, labels, rng_state):
                     else:
                         node_queue.append(j)
 
-            if n_iter >= 100:
+            if n_iter >= 64 or unlabelled:
                 labels[i] = tau_rand_int(local_rng_state) % (max_label + 1)
 
     return labels
