@@ -205,6 +205,69 @@ def label_propagation_init(
     base_init_threshold=64,
     upscaling="partition_expander",
 ):
+    """Initialize a node embedding using label propagation on a sparse graph.
+
+    This function provides a high-quality initialization for node embeddings by
+    combining graph-based label propagation with hierarchical partitioning. For
+    large graphs, it recursively partitions the data and upscales the results.
+    For small graphs, it uses direct methods (PCA, spectral embedding, or random).
+
+    Parameters
+    ----------
+    graph : scipy.sparse matrix
+        A sparse adjacency or weighted graph matrix representing connectivity.
+
+    n_label_prop_iter : int, default=20
+        Number of label propagation iterations to perform on the graph.
+
+    n_embedding_epochs : int, default=50
+        Number of epochs when using node embedding for upscaling.
+
+    approx_n_parts : int, default=512
+        Approximate number of partitions to create for recursive partitioning
+        of large graphs. Useful for controlling memory and computation.
+
+    n_components : int, default=2
+        The number of dimensions in the output embedding.
+
+    scaling : float, default=0.1
+        Scaling factor applied to label propagation distances.
+
+    random_scale : float, default=1.0
+        Scaling factor for random noise in the initialization.
+
+    noise_level : float, default=0.5
+        The noise level parameter passed to node embedding algorithms.
+
+    random_state : RandomState instance or None, default=None
+        Controls the randomness of the algorithm. If None, uses system randomness.
+
+    data : array-like of shape (n_samples, n_features) or None, default=None
+        The original data array. Required if base_init='pca'. Used for direct
+        initialization methods on small graphs.
+
+    recursive_init : bool, default=True
+        If True, uses recursive partitioning for large graphs. If False, applies
+        the base initialization method directly.
+
+    base_init : {'pca', 'random', 'spectral', 'mds'}, default='pca'
+        The initialization method to use for small graphs (when graph size is below
+        base_init_threshold). 'pca' requires the data parameter.
+
+    base_init_threshold : int, default=64
+        The size threshold below which the base_init method is used directly.
+        Graphs larger than this use recursive partitioning.
+
+    upscaling : {'partition_expander', 'node_embedding'}, default='partition_expander'
+        The method to use when upscaling partitions back to the full graph.
+        'partition_expander' uses a fast expansion method, 'node_embedding' uses
+        full node embedding (slower but potentially better quality).
+
+    Returns
+    -------
+    embedding : array-like of shape (n_vertices, n_components)
+        The initialized node embedding based on label propagation and graph structure.
+    """
     if random_state is None:
         random_state = np.random.RandomState()
 

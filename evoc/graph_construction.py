@@ -127,6 +127,38 @@ def neighbor_graph_matrix(
     knn_dists,
     symmetrize=True,
 ):
+    """Construct a sparse graph from k-nearest neighbor distances.
+
+    Converts k-nearest neighbor indices and distances into a weighted sparse graph
+    matrix using Gaussian kernel weights. Optionally symmetrizes the graph to
+    create an undirected graph.
+
+    Parameters
+    ----------
+    n_neighbors : float
+        The effective number of neighbors. Used in the kernel width (sigma)
+        computation via the smooth_knn_dist function.
+
+    knn_indices : array-like of shape (n_samples, k)
+        The indices of the k-nearest neighbors for each sample.
+
+    knn_dists : array-like of shape (n_samples, k)
+        The distances from each sample to its k-nearest neighbors.
+
+    symmetrize : bool, default=True
+        If True, the graph is symmetrized using the formula:
+        A_sym = A + A^T - A * A^T (union of forward and reverse edges).
+        If False, the graph remains directed (asymmetric).
+
+    Returns
+    -------
+    graph : scipy.sparse._csr_matrix or scipy.sparse._coo_matrix
+        A sparse matrix representing the weighted nearest neighbor graph.
+        The (i, j) entry contains the Gaussian kernel weight from sample i to
+        sample j, or 0 if j is not in the k-nearest neighbors of i.
+        If symmetrize=True, the matrix is symmetric and in CSR format.
+        If symmetrize=False, returns a CSR matrix (asymmetric).
+    """
     knn_dists = knn_dists.astype(np.float32)
 
     sigmas, rhos = smooth_knn_dist(
@@ -139,7 +171,9 @@ def neighbor_graph_matrix(
     )
 
     result = coo_array(
-        (vals, (rows, cols)), shape=(knn_indices.shape[0], knn_indices.shape[0]), dtype=np.float32,
+        (vals, (rows, cols)),
+        shape=(knn_indices.shape[0], knn_indices.shape[0]),
+        dtype=np.float32,
     )
     result.eliminate_zeros()
 

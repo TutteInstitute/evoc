@@ -121,6 +121,7 @@ def node_embedding_epoch(
                 n_neg_samples * epochs_per_negative_sample[i]
             )
 
+
 @numba.njit(
     "void(f4[:, ::1], u4[::1], u4[::1], u4, f4[::1], u4, u1, f4, f4[::1], f4[::1], f4[::1], u1, f4, f4, f4[:, ::1], u4[::1], u4)",
     fastmath=True,
@@ -170,7 +171,7 @@ def node_embedding_epoch_repr(
             from_node = node_order[node_idx]
             current = embedding[from_node]
 
-            for raw_index in range(csr_indptr[from_node], csr_indptr[from_node+1]):
+            for raw_index in range(csr_indptr[from_node], csr_indptr[from_node + 1]):
                 if epoch_of_next_sample[raw_index] <= n:
                     to_node = csr_indices[raw_index]
                     other = embedding[to_node]
@@ -189,22 +190,31 @@ def node_embedding_epoch_repr(
                     epoch_of_next_sample[raw_index] += epochs_per_sample[raw_index]
 
                     n_neg_samples = int(
-                        (n - epoch_of_next_negative_sample[raw_index]) / epochs_per_negative_sample[raw_index]
+                        (n - epoch_of_next_negative_sample[raw_index])
+                        / epochs_per_negative_sample[raw_index]
                     )
 
                     for p in range(n_neg_samples):
-                        to_node = node_order[(raw_index * (n + p + 1) * rng_state) % n_vertices]
+                        to_node = node_order[
+                            (raw_index * (n + p + 1) * rng_state) % n_vertices
+                        ]
                         other = embedding[to_node]
 
                         dist_squared = rdist(current, other)
 
                         if dist_squared > 1e-2:
-                            grad_coeff = gamma * 4.0 / ((1.0 + 0.25 * dist_squared) * dist_squared)
+                            grad_coeff = (
+                                gamma
+                                * 4.0
+                                / ((1.0 + 0.25 * dist_squared) * dist_squared)
+                            )
                             # grad_coeff /= n_neg_samples
 
                             if grad_coeff > 0.0:
                                 for d in range(dim):
-                                    grad_d = clip(grad_coeff * (current[d] - other[d]), -4, 4)
+                                    grad_d = clip(
+                                        grad_coeff * (current[d] - other[d]), -4, 4
+                                    )
                                     updates[from_node, d] += grad_d * alpha
 
                     epoch_of_next_negative_sample[raw_index] += (
@@ -215,6 +225,7 @@ def node_embedding_epoch_repr(
             from_node = node_order[node_idx]
             for d in range(dim):
                 embedding[from_node, d] += updates[from_node, d]
+
 
 def node_embedding(
     graph,
@@ -229,6 +240,59 @@ def node_embedding(
     verbose=False,
     tqdm_kwds={},
 ):
+    """Learn a low-dimensional embedding of a graph using a UMAP-like algorithm.
+
+    This function performs stochastic gradient descent optimization to learn a
+    low-dimensional embedding of graph structure. It uses both positive (connected
+    edges) and negative (random) samples to guide the optimization.
+
+    Parameters
+    ----------
+    graph : scipy.sparse matrix, typically csr_matrix or csc_matrix
+        A sparse adjacency matrix representing the graph. The weights in the matrix
+        represent connection strengths between nodes.
+
+    n_components : int
+        The number of dimensions in the output embedding.
+
+    n_epochs : int
+        The number of epochs to train the embedding.
+
+    initial_embedding : array-like of shape (n_vertices, n_components) or None, default=None
+        An initial embedding to use as a starting point. If None, a random
+        embedding is generated from a normal distribution with scale 0.25.
+
+    initial_alpha : float, default=0.5
+        The initial learning rate. The learning rate decays linearly over epochs.
+
+    negative_sample_rate : float, default=1.0
+        The rate at which negative samples are drawn relative to positive samples.
+        Controls the ratio of negative to positive updates per epoch.
+
+    noise_level : float, default=0.5
+        Controls the strength of noise in the gradient computation. Higher values
+        increase the tolerance for larger distances before penalizing in the
+        embedding space.
+
+    random_state : RandomState instance or None, default=None
+        Random state for reproducibility. If None, uses system randomness.
+
+    reproducible_flag : bool, default=True
+        If True, uses a deterministic (but slower) update strategy that processes
+        nodes in blocks for reproducibility. If False, uses a faster stochastic
+        approach.
+
+    verbose : bool, default=False
+        If True, display a progress bar during training.
+
+    tqdm_kwds : dict, default={}
+        Additional keyword arguments to pass to tqdm for progress bar customization.
+
+    Returns
+    -------
+    embedding : array-like of shape (n_vertices, n_components)
+        The learned low-dimensional embedding of the graph vertices.
+    """
     if random_state is None:
         random_state = np.random.RandomState()
     if initial_embedding is None:
@@ -308,7 +372,7 @@ def node_embedding(
                 node_order,
                 np.uint32(block_size),
             )
-            updates *= (1.0 - alpha)**2 * 0.5
+            updates *= (1.0 - alpha) ** 2 * 0.5
             random_state.shuffle(node_order)
         alpha = np.float32(initial_alpha * (1.0 - (float(n) / float(n_epochs))))
 
