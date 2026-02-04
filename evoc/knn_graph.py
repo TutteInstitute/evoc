@@ -200,6 +200,73 @@ def knn_graph(
     verbose=False,
     use_sorted_updates=True,
 ):
+    """Construct a k-nearest neighbor graph using the NN-Descent algorithm.
+
+    This function builds a k-nearest neighbor graph using random projection trees
+    for initialization followed by the NN-Descent algorithm for refinement. It
+    supports multiple data types (float32 for normalized embeddings, int8 for
+    quantized embeddings, uint8 for binary embeddings) with appropriate distance
+    metrics for each.
+
+    Parameters
+    ----------
+    data : array-like of shape (n_samples, n_features)
+        The data for which to compute nearest neighbors. If float32, cosine distance
+        is used. If int8, quantized cosine distance is used. If uint8, Jaccard
+        distance (based on Hamming distance for binary embeddings) is used.
+
+    n_neighbors : int, default=30
+        The number of nearest neighbors to compute for each sample.
+
+    n_trees : int or None, default=None
+        The number of random projection trees to build. If None, defaults to
+        between 4 and 8 depending on the number of available threads.
+
+    leaf_size : int or None, default=None
+        The maximum number of points per leaf in the random projection trees.
+        If None, defaults to max(10, n_neighbors).
+
+    random_state : int, RandomState instance or None, default=None
+        Controls the randomness of the algorithm. Pass an int for reproducible
+        output across multiple function calls.
+
+    max_candidates : int or None, default=None
+        The maximum number of candidate neighbors to evaluate during NN-Descent.
+        If None, defaults to min(60, int(n_neighbors * 1.5)).
+
+    max_rptree_depth : int, default=200
+        Maximum depth of the random projection trees.
+
+    n_iters : int or None, default=None
+        Number of iterations for the NN-Descent algorithm. If None, defaults to
+        max(5, int(round(log2(n_samples)))).
+
+    delta : float, default=0.001
+        Convergence threshold for the NN-Descent algorithm.
+
+    delta_improv : float, default=0.001
+        Improvement threshold for early stopping in NN-Descent.
+
+    n_jobs : int or None, default=None
+        The number of threads to use. If -1, uses all available threads.
+        If None, preserves the current numba thread setting.
+
+    verbose : bool, default=False
+        If True, print progress messages during computation.
+
+    use_sorted_updates : bool, default=True
+        If True, uses a more efficient sorted update strategy in NN-Descent.
+
+    Returns
+    -------
+    neighbor_graph : tuple of (array, array)
+        A tuple containing:
+        - indices : array-like of shape (n_samples, n_neighbors)
+            The indices of the k-nearest neighbors for each sample.
+        - distances : array-like of shape (n_samples, n_neighbors)
+            The distances from each sample to its k-nearest neighbors.
+            Distances are transformed to a uniform scale based on the input dtype.
+    """
     if data.dtype == np.uint8:
         data = check_array(data, dtype=np.uint8, order="C")
         _input_dtype = np.uint8

@@ -42,6 +42,55 @@ def build_cluster_layers(
     min_similarity_threshold=0.2,
     max_layers=10,
 ):
+    """Build hierarchical cluster layers from embedding data.
+
+    Parameters
+    ----------
+    data : array-like of shape (n_samples, n_features)
+        The embedding data to cluster. Typically the output of a node embedding
+        algorithm.
+
+    min_samples : int, default=5
+        The minimum number of samples to use in the density estimation when
+        performing density based clustering.
+
+    base_min_cluster_size : int, default=10
+        The minimum number of points in a cluster at the base layer of the clustering.
+        This gives the finest granularity clustering that will be returned.
+
+    base_n_clusters : int or None, default=None
+        If not None, the algorithm will attempt to find the granularity of
+        clustering that will give exactly this many clusters for the bottom-most layer
+        of clustering. This affects the base layer computation and allows multiple
+        layers to be built on top of this base.
+
+    reproducible_flag : bool, default=False
+        Whether to ensure reproducible results by using deterministic algorithms
+        where possible.
+
+    min_similarity_threshold : float, default=0.2
+        The minimum similarity threshold for cluster layer selection. Peaks that result
+        in clusterings with Jaccard similarity above this threshold will be filtered out
+        to ensure diverse cluster layers.
+
+    max_layers : int, default=10
+        The maximum number of cluster layers to return. The algorithm will select up to
+        this many diverse peaks based on persistence and similarity criteria.
+
+    Returns
+    -------
+    cluster_layers : list of array-like of shape (n_samples,)
+        The clustering of the data at each layer of the clustering. Each layer
+        is a clustering of the data into a different number of clusters.
+
+    membership_strength_layers : list of array-like of shape (n_samples,)
+        The membership strengths of each point in the clustering at each layer.
+        This gives a measure of how strongly each point belongs to each cluster.
+
+    persistence_scores : list of float
+        The persistence scores for each cluster layer, indicating the quality or
+        stability of the clustering at that layer.
+    """
     n_samples = data.shape[0]
     min_cluster_size = base_min_cluster_size
     cluster_layers = []
@@ -539,6 +588,10 @@ class EVoC(BaseEstimator, ClusterMixin):
             Ignored. This parameter exists only for compatibility with
             scikit-learn's fit_predict method.
 
+        **fit_params : dict
+            Additional fit parameters. Currently unused, included for compatibility
+            with scikit-learn's fit_predict interface.
+
         Returns
         -------
 
@@ -606,6 +659,10 @@ class EVoC(BaseEstimator, ClusterMixin):
         y : array-like of shape (n_samples,), default=None
             Ignored. This parameter exists only for compatibility with
             scikit-learn's fit method.
+
+        **fit_params : dict
+            Additional fit parameters. Currently unused, included for compatibility
+            with scikit-learn's fit interface.
 
         Returns
         -------
