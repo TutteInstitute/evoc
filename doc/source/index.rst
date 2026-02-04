@@ -14,51 +14,73 @@ EVōC: Embedding Vector Oriented Clustering
    :target: https://opensource.org/licenses/BSD-3-Clause
    :alt: License
 
-EVōC (pronounced as "evoke") provides Embedding Vector Oriented Clustering.
+**Cluster embedding vectors with automatic structure discovery**
 
-EVōC (Embedding Vector Oriented Clustering) is a powerful clustering algorithm designed specifically for high-dimensional 
-embedding vectors such as CLIP-vectors, sentence-transformers output, and other dense vector representations. 
+If you're working with modern embedding representations—CLIP vectors, sentence embeddings, or other dense vector representations from foundation models—you face a clustering challenge: standard algorithms like K-means or DBSCAN don't perform well on high-dimensional embeddings. That's where EVōC comes in.
 
-The algorithm combines a node embedding approach (related to UMAP) with density-based clustering (related to HDBSCAN), 
-providing improved efficiency and quality for clustering high-dimensional embedding vectors.
+EVōC (pronounced "evoke") is a clustering algorithm specifically designed for embedding vectors. It automatically discovers meaningful cluster structures in your embeddings without requiring you to guess the number of clusters or tune many parameters. Under the hood, EVōC combines a fast graph-based embedding approach with intelligent density-based clustering, optimized to work efficiently on modern embeddings.
 
-Key Features
-------------
+What's Different About EVōC?
+----------------------------
 
-* **Optimized for High-Dimensional Embeddings**: Specifically designed for modern embedding vectors
-* **Multi-Layer Clustering**: Provides hierarchical clustering with multiple granularity levels
-* **Performance Optimized**: Uses Numba for high-performance computation
-* **Flexible Parameters**: Extensive parameter set for fine-tuning clustering behavior
-* **Scikit-learn Compatible**: Follows scikit-learn API conventions
+**For Practitioners:** Get results fast with minimal parameter tuning. EVōC figures out the right number of clusters automatically. Just load your embeddings and run it.
 
-Quick Start
------------
+**For Researchers:** Explore hierarchical cluster structures at multiple granularities in a single pass. Access membership strengths and detailed clustering metadata for analysis and experimentation.
 
-.. code-block:: python
+**Performance:** Using optimized Numba kernels and an efficient two-stage algorithm, EVōC clusters large embedding collections faster than UMAP+HDBSCAN while maintaining or improving quality.
 
-   from evoc import EVoC
-   import numpy as np
+**Easy to Install:** Pure Python with just Numba as a core dependency. No complicated build steps or system-level dependencies.
 
-   # Generate sample data
-   X = np.random.rand(1000, 512)  # 1000 samples, 512-dimensional embeddings
+The EVōC Approach: Two Stages
+-----------------------------
 
-   # Initialize and fit the clusterer
-   clusterer = EVoC()
-   labels = clusterer.fit_predict(X)
+EVōC works in two stages:
 
-   # Access cluster layers and membership strengths
-   print(f"Number of clusters: {len(np.unique(labels[labels >= 0]))}")
-   print(f"Number of cluster layers: {len(clusterer.cluster_layers_)}")
+1. **Graph Embedding** — Build a k-nearest neighbor graph of your embeddings and learn an efficient intermediate representation (inspired by UMAP)
+2. **Density Clustering** — Apply hierarchical density-based clustering to this representation (inspired by HDBSCAN)
+
+This combination gives you the best of both worlds: fast, efficient processing of high-dimensional vectors, plus robust cluster discovery that handles noise gracefully.
+
+Learn More
+----------
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Getting Started:
 
-   installation
    quickstart
+   installation
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Understanding EVōC:
+
+   how_evoc_works
    user_guide
-   api/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Learning Notebooks:
+
+   notebooks/01_getting_started
+   notebooks/02_text_embeddings
+   notebooks/03_image_embeddings
+   notebooks/04_biological_data
+   notebooks/05_quantized_embeddings
+   notebooks/06_performance_benchmarks
+   notebooks/07_understanding_layers
+
+.. toctree::
+   :maxdepth: 2
+   :caption: In Practice:
+
    examples
+   api/index
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference:
+
    changelog
 
 Indices and tables

@@ -264,3 +264,18 @@ Stability Analysis
 
    print(f"Mean stability: {np.mean(stability_scores):.3f}")
    print(f"Std stability: {np.std(stability_scores):.3f}")
+
+Learn by Doing
+--------------
+
+The best way to learn EVōC is through our interactive Jupyter notebooks:
+
+- **Getting Started** — :doc:`notebooks/01_getting_started` — Basic tutorial with synthetic and real data
+- **Text Embeddings** — :doc:`notebooks/02_text_embeddings` — Cluster documents with semantic embeddings
+- **Image Embeddings** — :doc:`notebooks/03_image_embeddings` — Real-world CIFAR-100 with CLIP vectors
+- **Biological Data** — :doc:`notebooks/04_biological_data` — Domain-specific clustering with audio embeddings
+- **Quantization** — :doc:`notebooks/05_quantized_embeddings` — Memory-efficient int8 embeddings
+- **Performance** — :doc:`notebooks/06_performance_benchmarks` — Compare EVōC vs. alternatives
+- **Layers Deep Dive** — :doc:`notebooks/07_understanding_layers` — Understanding hierarchical structure
+
+See the :doc:`quickstart` for a guided introduction to all notebooks.
