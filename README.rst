@@ -24,6 +24,8 @@ EVōC is the library to use if you want:
  As of now this is very much an early beta version of the library. Things can and will break right now.
  We would welcome feedback, use cases and feature suggestions however.
 
+**🤖 Chat with our AI docs:** https://deepwiki.com/TutteInstitute/evoc
+
 -----------
 Basic Usage
 -----------
