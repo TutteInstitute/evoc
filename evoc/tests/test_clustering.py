@@ -108,7 +108,7 @@ def small_linkage_tree():
     X = X / np.linalg.norm(X, axis=1, keepdims=True)
     numba_tree = build_kdtree(X.astype(np.float32))
     num_threads = numba.get_num_threads()
-    edges = parallel_boruvka(numba_tree, num_threads, min_samples=3)
+    edges = parallel_boruvka(numba_tree, num_threads, min_samples=3, reproducible=False)
     sorted_mst = edges[np.argsort(edges.T[2])]
     return mst_to_linkage_tree(sorted_mst)
 

@@ -147,7 +147,9 @@ def binary_search_for_n_clusters(
     min_samples=5,
 ):
     numba_tree = build_kdtree(data.astype(np.float32))
-    edges = parallel_boruvka(numba_tree, n_threads, min_samples=min_samples)
+    edges = parallel_boruvka(
+        numba_tree, n_threads, min_samples=min_samples, reproducible=False
+    )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
 

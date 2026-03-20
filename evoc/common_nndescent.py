@@ -367,6 +367,7 @@ def flagged_heap_push(priorities, indices, flags, p, n):
         "indices": numba.int32[:, ::1],
         "flags": numba.uint8[:, ::1],
     },
+    cache=True,
 )
 def apply_graph_update_array(
     current_graph, update_array, n_updates_per_thread, n_threads
