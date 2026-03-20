@@ -126,6 +126,7 @@ def node_embedding_epoch(
     "void(f4[:, ::1], u4[::1], u4[::1], u4, f4[::1], u4, u1, f4, f4[::1], f4[::1], f4[::1], u1, f4, f4, f4[:, ::1], u4[::1], u4)",
     fastmath=True,
     parallel=True,
+    cache=True,
     locals={
         "updates": numba.types.float32[:, ::1],
         "from_node": numba.types.intp,

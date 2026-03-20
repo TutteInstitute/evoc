@@ -211,12 +211,12 @@ def float_random_projection_split(data, indices, rng_state):
         numba.int32[::1],
         numba.types.ListType(numba.int32[::1]),
         numba.int64[::1],
-        numba.uint64,
-        numba.uint64,
+        numba.int64,
+        numba.int64,
     ),
     nogil=True,
     locals={"left_indices": numba.int32[::1], "right_indices": numba.int32[::1]},
-    cache=False,
+    cache=True,
 )
 def make_float_tree(
     data,
@@ -269,33 +269,24 @@ def make_float_tree(
     return
 
 
-from numba.core.errors import NumbaTypeSafetyWarning
-from warnings import simplefilter
-
-simplefilter("ignore", category=NumbaTypeSafetyWarning)
-
-
 @numba.njit(
     numba.int32[:, ::1](
         numba.types.Array(numba.types.float32, 2, "C", readonly=True),
         numba.int64[::1],
-        numba.uint64,
-        numba.uint64,
+        numba.int64,
+        numba.int64,
     ),
     nogil=True,
     locals={
-        "n_leaves": numba.uint64,
-        "i": numba.uint64,
-        "points": point_indices_type,
-        "max_leaf_size": numba.uint64,
+        "points": numba.int32[::1],
     },
-    parallel=ENABLE_NESTED_PARALLELISM,
-    cache=False,
+    parallel=True,
+    cache=True,
 )
-def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
+def make_float_leaf_array_parallel(data, rng_state, leaf_size=30, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
 
-    point_indices = numba.typed.List.empty_list(point_indices_type)
+    point_indices = numba.typed.List.empty_list(numba.int32[::1])
 
     make_float_tree(
         data,
@@ -306,24 +297,65 @@ def make_float_leaf_array(data, rng_state, leaf_size=30, max_depth=200):
         max_depth=max_depth,
     )
 
-    n_leaves = len(point_indices)
+    n_leaves = numba.int64(len(point_indices))
+    max_leaf_size = numba.int32(leaf_size)
 
-    max_leaf_size = leaf_size
-    # for i in numba.prange(n_leaves):
-    for i in range(n_leaves):
-        points = point_indices[i]
-        max_leaf_size = max(max_leaf_size, numba.uint64(len(points)))
+    for i in numba.prange(n_leaves):
+        points = point_indices[numba.int64(i)]
+        max_leaf_size = max(max_leaf_size, numba.int32(len(points)))
 
     result = np.full((n_leaves, max_leaf_size), -1, dtype=np.int32)
     for i in numba.prange(n_leaves):
-        points = point_indices[i]
-        leaf_size = numba.int32(len(points))
-        result[i, :leaf_size] = points
+        points = point_indices[numba.int64(i)]
+        n_points = numba.int32(len(points))
+        result[i, :n_points] = points
 
     return result
 
 
-simplefilter("default", category=NumbaTypeSafetyWarning)
+@numba.njit(
+    numba.int32[:, ::1](
+        numba.types.Array(numba.types.float32, 2, "C", readonly=True),
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
+    nogil=True,
+    locals={
+        "points": numba.int32[::1],
+    },
+    parallel=False,
+    cache=True,
+)
+def make_float_leaf_array_serial(data, rng_state, leaf_size=30, max_depth=200):
+    indices = np.arange(data.shape[0]).astype(np.int32)
+
+    point_indices = numba.typed.List.empty_list(numba.int32[::1])
+
+    make_float_tree(
+        data,
+        indices,
+        point_indices,
+        rng_state,
+        leaf_size,
+        max_depth=max_depth,
+    )
+
+    n_leaves = numba.int64(len(point_indices))
+
+    max_leaf_size = numba.int32(leaf_size)
+
+    for i in range(n_leaves):
+        points = point_indices[numba.int64(i)]
+        max_leaf_size = max(max_leaf_size, numba.int32(len(points)))
+
+    result = np.full((n_leaves, max_leaf_size), -1, dtype=np.int32)
+    for i in range(n_leaves):
+        points = point_indices[numba.int64(i)]
+        n_points = numba.int32(len(points))
+        result[i, :n_points] = points
+
+    return result
 
 
 @numba.njit(
@@ -334,15 +366,45 @@ simplefilter("default", category=NumbaTypeSafetyWarning)
         numba.uint64,
     ),
     parallel=True,
-    cache=False,
+    cache=True,
 )
-def make_float_forest(data, rng_states, leaf_size, max_depth):
+def make_float_forest_no_nested_parallelism(data, rng_states, leaf_size, max_depth):
     result = [np.empty((1, 1), dtype=np.int32)] * rng_states.shape[0]
     for i in numba.prange(len(result)):
-        result[i] = make_float_leaf_array(
+        result[i] = make_float_leaf_array_serial(
             data, rng_states[i], leaf_size, max_depth=max_depth
         )
     return result
+
+
+@numba.njit(
+    numba.types.List(numba.int32[:, ::1])(
+        numba.types.Array(numba.types.float32, 2, "C", readonly=True),
+        numba.int64[:, ::1],
+        numba.uint64,
+        numba.uint64,
+    ),
+    parallel=True,
+    cache=True,
+)
+def make_float_forest_with_nested_parallelism(data, rng_states, leaf_size, max_depth):
+    result = [np.empty((1, 1), dtype=np.int32)] * rng_states.shape[0]
+    for i in numba.prange(len(result)):
+        result[i] = make_float_leaf_array_parallel(
+            data, rng_states[i], leaf_size, max_depth=max_depth
+        )
+    return result
+
+
+def make_float_forest(data, rng_states, leaf_size=30, max_depth=200):
+    if ENABLE_NESTED_PARALLELISM:
+        return make_float_forest_with_nested_parallelism(
+            data, rng_states, leaf_size, max_depth
+        )
+    else:
+        return make_float_forest_no_nested_parallelism(
+            data, rng_states, leaf_size, max_depth
+        )
 
 
 @numba.njit(

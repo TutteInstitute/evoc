@@ -166,7 +166,9 @@ class TestKDTreePerformance:
         # Verify both trees work correctly
         query_point = X[0:1]
         sklearn_dists, sklearn_inds = sklearn_tree.query(query_point, k=5)
-        numba_dists, numba_inds = parallel_tree_query(numba_tree, query_point, k=5)
+        numba_dists, numba_inds = parallel_tree_query(
+            numba_tree, query_point, k=5, output_rdist=False
+        )
 
         assert sklearn_dists.shape == (1, 5)
         assert numba_dists.shape == (1, 5)
@@ -199,7 +201,7 @@ class TestKDTreePerformance:
         k = min(30, n_samples // 20)  # Reasonable k value
 
         # Warm up numba (not timed)
-        _ = parallel_tree_query(numba_tree, query_data[:5], k=k)
+        _ = parallel_tree_query(numba_tree, query_data[:5], k=k, output_rdist=False)
 
         # Time sklearn queries
         sklearn_result, sklearn_time = time_function(
@@ -208,7 +210,7 @@ class TestKDTreePerformance:
 
         # Time numba queries
         numba_result, numba_time = time_function(
-            parallel_tree_query, numba_tree, query_data, k=k
+            parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
         )
 
         # Record metrics
@@ -295,7 +297,7 @@ class TestKDTreePerformance:
         k = min(50, n_samples // 20)  # Larger k value
 
         # Warm up numba
-        _ = parallel_tree_query(numba_tree, query_data[:10], k=k)
+        _ = parallel_tree_query(numba_tree, query_data[:10], k=k, output_rdist=False)
 
         # Time sklearn batch queries
         sklearn_result, sklearn_time = time_function(
@@ -304,7 +306,7 @@ class TestKDTreePerformance:
 
         # Time numba batch queries (should benefit from parallelization)
         numba_result, numba_time = time_function(
-            parallel_tree_query, numba_tree, query_data, k=k
+            parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
         )
 
         # Record metrics
@@ -367,7 +369,9 @@ class TestKDTreePerformance:
 
         # Get results from both implementations
         sklearn_dists, sklearn_inds = sklearn_tree.query(query_data, k=k)
-        numba_dists, numba_inds = parallel_tree_query(numba_tree, query_data, k=k)
+        numba_dists, numba_inds = parallel_tree_query(
+            numba_tree, query_data, k=k, output_rdist=False
+        )
 
         # Check shapes match
         assert sklearn_dists.shape == numba_dists.shape
@@ -429,7 +433,7 @@ class TestKDTreePerformance:
             # Warm up numba
             if n_samples >= 1000:
                 warmup_tree = build_kdtree(X[:100], leaf_size=40)
-                _ = parallel_tree_query(warmup_tree, X[:10], k=5)
+                _ = parallel_tree_query(warmup_tree, X[:10], k=5, output_rdist=False)
 
             # Time construction
             sklearn_tree, sklearn_time = time_function(SklearnKDTree, X, leaf_size=40)
@@ -481,7 +485,7 @@ class TestKDTreePerformance:
         query_data = np.random.rand(n_queries, n_features).astype(np.float32) * 10.0
 
         # Warm up numba
-        _ = parallel_tree_query(numba_tree, query_data[:5], k=5)
+        _ = parallel_tree_query(numba_tree, query_data[:5], k=5, output_rdist=False)
 
         k_values = [1, 5, 10, 20, 50]
 
@@ -494,7 +498,7 @@ class TestKDTreePerformance:
                 sklearn_tree.query, query_data, k=k
             )
             numba_result, numba_time = time_function(
-                parallel_tree_query, numba_tree, query_data, k=k
+                parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
             )
 
             test_name = f"k_value_{k}"
@@ -535,7 +539,7 @@ class TestKDTreePerformance:
 
         # Warm up numba
         warmup_queries = np.random.rand(50, n_features).astype(np.float32) * 10.0
-        _ = parallel_tree_query(numba_tree, warmup_queries, k=k)
+        _ = parallel_tree_query(numba_tree, warmup_queries, k=k, output_rdist=False)
 
         sklearn_speedups = []
         numba_speedups = []
@@ -554,7 +558,7 @@ class TestKDTreePerformance:
                 sklearn_tree.query, query_data, k=k
             )
             numba_result, numba_time = time_function(
-                parallel_tree_query, numba_tree, query_data, k=k
+                parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
             )
 
             sklearn_qps = batch_size / sklearn_time
@@ -620,14 +624,14 @@ class TestKDTreePerformance:
         k = 25
 
         # Warm up numba
-        _ = parallel_tree_query(numba_tree, query_data[:20], k=k)
+        _ = parallel_tree_query(numba_tree, query_data[:20], k=k, output_rdist=False)
 
         # Time both implementations
         sklearn_result, sklearn_time = time_function(
             sklearn_tree.query, query_data, k=k
         )
         numba_result, numba_time = time_function(
-            parallel_tree_query, numba_tree, query_data, k=k
+            parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
         )
 
         # Calculate metrics
@@ -698,7 +702,7 @@ class TestKDTreeRegressionBaseline:
         # Warm up numba compilation
         warmup_tree = build_kdtree(X[:100], leaf_size=40)
         warmup_queries = X[:10]
-        _ = parallel_tree_query(warmup_tree, warmup_queries, k=10)
+        _ = parallel_tree_query(warmup_tree, warmup_queries, k=10, output_rdist=False)
 
         print(f"\nKDTree Baseline Performance Report:")
         print(f"  Dataset: {n_samples} samples x {n_features} features")
@@ -728,7 +732,7 @@ class TestKDTreeRegressionBaseline:
             sklearn_tree.query, query_data, k=k
         )
         numba_result, numba_query_time = time_function(
-            parallel_tree_query, numba_tree, query_data, k=k
+            parallel_tree_query, numba_tree, query_data, k=k, output_rdist=False
         )
 
         # Calculate metrics
