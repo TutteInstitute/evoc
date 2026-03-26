@@ -14,7 +14,6 @@ Main Classes and Functions
 
    EVoC
    evoc_clusters
-   build_cluster_layers
 
 Core Clustering
 ---------------
@@ -25,8 +24,6 @@ Core Clustering
    :show-inheritance:
 
 .. autofunction:: evoc_clusters
-
-.. autofunction:: build_cluster_layers
 
 Utility Functions
 -----------------
