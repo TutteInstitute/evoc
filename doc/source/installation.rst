@@ -58,3 +58,7 @@ To verify that EVoC is installed correctly:
    clusterer = EVoC()
    labels = clusterer.fit_predict(X)
    print(f"Clustering completed successfully! Found {len(np.unique(labels[labels >= 0]))} clusters.")
+
+Note that on first import and first run there will be time spent on Numba's JIT compilation, which may take a few seconds. 
+Subsequent runs will be much faster, and the compilation should be cached, so it should not need to be repeated unless you 
+change the code or update Numba.
