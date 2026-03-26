@@ -57,8 +57,8 @@ Quick Start
    installation
    quickstart
    user_guide
+   benchmarks
    api/index
-   examples
    changelog
 
 Indices and tables

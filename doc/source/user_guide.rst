@@ -1,7 +1,9 @@
 User Guide
 ==========
 
-This comprehensive guide covers EVoC's features, parameters, and best practices for different use cases.
+This end-user oriented guide covers EVoC's features, parameters, and best practices for different use cases. To better 
+understand the parameters that are available, it help help to bgin with an overview of the algorithm and its key
+components.
 
 Algorithm Overview
 ------------------
@@ -9,9 +11,15 @@ Algorithm Overview
 EVoC (Embedding Vector Oriented Clustering) combines two key techniques:
 
 1. **Graph Embedding**: Constructs a k-nearest neighbor graph and learns a lower-dimensional embedding (similar to UMAP)
-2. **Density Clustering**: Applies hierarchical density-based clustering to the embedding (similar to HDBSCAN)
+2. **Density Clustering**: Applies hierarchical density-based clustering to the embedding (similar to HDBSCAN and PLSCAN)
 
-This combination provides several advantages for high-dimensional embedding vectors:
+The advantage of EVoC is that it can optimize every part of these tasks for the specific task of clustering high-dimensional 
+embedding vectors, providing both improved **performance** and **quality** compared to general-purpose clustering algorithms.
+That is to say, EVoC not only runs much faster than a combination of UMAP and HDBSCAN, but also produces better clusters as
+a result.
+
+The combination of dimension reduction/manifold learning and density clustering tailored to embedding vectors provides several 
+advantages for clustering embedding vectors:
 
 * Efficient processing of dense, high-dimensional data
 * Multiple clustering granularities through hierarchical layers
@@ -21,13 +29,13 @@ This combination provides several advantages for high-dimensional embedding vect
 Parameter Reference
 -------------------
 
+With that core idea -- a two part algorithm -- in mind, let's explore the key parameters that control EVoC's behavior. 
+The parameters can be broadly categorized into three groups:
+
 Core Parameters
 ~~~~~~~~~~~~~~~
 
-**noise_level** : float, default=0.5
-   Controls the trade-off between cluster purity and data coverage. Lower values (0.0-0.3) include more 
-   points in clusters but may reduce cluster quality. Higher values (0.7-1.0) produce purer clusters 
-   but classify more points as noise.
+These are the main parameters that most users will want to adjust based on their specific dataset and clustering goals:
 
 **base_min_cluster_size** : int, default=5  
    Minimum number of points required to form a cluster at the base (finest) granularity level. 
@@ -43,6 +51,8 @@ Core Parameters
 
 Clustering Control
 ~~~~~~~~~~~~~~~~~~
+
+These parameters control the clustering behavior and granularity:
 
 **base_n_clusters** : int, optional
    Target number of clusters for the base layer. When specified, EVoC will search for the clustering 
@@ -62,6 +72,14 @@ Clustering Control
 
 Advanced Parameters  
 ~~~~~~~~~~~~~~~~~~~
+
+These parameters provide more fine-grained control over the algorithm and are typically only adjusted by advanced users:
+
+**noise_level** : float, default=0.5
+   Controls the noise threshold for cluster membership. Higher values produce more noise points 
+   and fewer clusters, while lower values produce more clusters and fewer noise points. In practice
+   this only provides fine-tuning over the amount of noise, and is not as important as 
+   base_min_cluster_size and min_samples.
 
 **node_embedding_dim** : int, optional
    Dimensionality of the intermediate node embedding. If None, defaults to min(max(n_neighbors // 4, 4), 15).
@@ -91,53 +109,10 @@ Advanced Parameters
 Best Practices
 --------------
 
-Choosing Parameters for Different Use Cases
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Small Datasets (< 1,000 samples)**:
-
-.. code-block:: python
-
-   clusterer = EVoC(
-       n_neighbors=10,
-       base_min_cluster_size=3,
-       min_samples=3,
-       noise_level=0.3
-   )
-
-**Medium Datasets (1,000 - 100,000 samples)**:
-
-.. code-block:: python
-
-   clusterer = EVoC(
-       n_neighbors=15,
-       base_min_cluster_size=5,
-       min_samples=5,
-       noise_level=0.5
-   )
-
-**Large Datasets (> 100,000 samples)**:
-
-.. code-block:: python
-
-   clusterer = EVoC(
-       n_neighbors=20,
-       base_min_cluster_size=10,
-       min_samples=10,
-       noise_level=0.7,
-       max_layers=5
-   )
-
-**High-Dimensional Embeddings (> 1,000 dimensions)**:
-
-.. code-block:: python
-
-   clusterer = EVoC(
-       n_neighbors=25,
-       node_embedding_dim=20,
-       neighbor_scale=0.8,
-       n_epochs=75
-   )
+As a general rule EVoC is desgined to largely be as parameter-free as possible. The default parameters 
+should work well for a wide range of datasets and use cases, and most users will not need to adjust them.
+So the best place to start is just running with default parameters and then adjusting based on the results. 
+However, here are some best practices for different scenarios:
 
 Working with Hierarchical Output
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -162,68 +137,51 @@ EVoC provides multiple clustering layers with different granularities:
    tree = clusterer.cluster_tree_
    # ... analyze hierarchical structure ...
 
-Handling Different Embedding Types
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The layer 0 is always the most fine-grained layer as determined by ``base_min_cluster_size`` or ``base_n_clusters``. 
+Each subsequent layer provides a coarser clustering, with fewer clusters. In general the most fine-grained layers
+will have the most noise points, and the coarser layers will have fewer noise points. The persistence score
+provides a measure of how stable each layer is across different parameter settings, with higher scores indicating more robust clusters.
 
-**Standard Dense Embeddings (CLIP, sentence-transformers)**:
+If you are interested in getting very fine-grained clusters it is worth setting ``base_min_cluster_size`` or ``base_n_clusters`` 
+explicitly to ensure you get clustering at that granularity. You can then inspect the other layers to see if the other natural
+granularities align with your use case. If you are only interested in a single clustering, you can set ``approx_n_clusters`` 
+to get the layer that is closest to that number of clusters.
 
-.. code-block:: python
-
-   # Ensure float32 for optimal performance
-   X = embeddings.astype(np.float32)
-   clusterer = EVoC(neighbor_scale=1.2)  # Slightly denser graph
-   labels = clusterer.fit_predict(X)
-
-**Quantized Embeddings (int8)**:
-
-.. code-block:: python
-
-   # Quantize to int8 range
-   X_quantized = (embeddings * 127).clip(-127, 127).astype(np.int8)
-   clusterer = EVoC(n_neighbors=20)  # More neighbors for quantized data
-   labels = clusterer.fit_predict(X_quantized)
-
-**Binary Embeddings (uint8)**:
-
-.. code-block:: python
-
-   # Binarize embeddings  
-   X_binary = (embeddings > threshold).astype(np.uint8)
-   clusterer = EVoC(
-       n_neighbors=30,         # More neighbors for binary data
-       neighbor_scale=1.5,     # Denser graph
-       noise_level=0.4         # Lower noise threshold
-   )
-   labels = clusterer.fit_predict(X_binary)
+You can also make use of the tree structure to analyze how clusters evolve across layers, and to identify stable clusters 
+that persist across multiple layers. Alternatively you can use the tree structure to create a "mixed" resolution layer by selecting
+clusters at a given layer, and then also selecting any clusters in lower layers that are no children of any of your selected clusters. 
+This allows you to get a more fine-grained clustering in some parts of the data, while keeping a coarser clustering i
+n other parts of the data.
 
 Performance Optimization
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-For large datasets or when performance is critical:
+Depending on your needs you may be willing to trade off some accuracy for speed, or vice versa. 
+The default EVoC parameters are designed primarily for exploratory clustering, and thus produce clusters very quickly.
+If you are looking for a more robust higher quality clustering, it can be worth tweaking the parameters to spend
+more time to produce a better clustering result. For example, for a medium sized dataset (e.g. 10k-100k points) 
+you can increase the number of epochs and neighbors to get a better embedding, which will lead to better clusters.
+In such cases you will also likely want to fix a random seed to ensure reproducibility, as the optimization process is stochastic.
 
 .. code-block:: python
 
    clusterer = EVoC(
-       n_neighbors=15,         # Balance between quality and speed
-       n_epochs=30,           # Fewer epochs for faster embedding  
-       max_layers=3,          # Limit hierarchy depth
-       node_embedding_dim=10,  # Lower embedding dimension
+       n_epochs=150,           # More epochs for better embedding  
        random_state=42        # Enable optimizations
    )
 
-Memory Management
-~~~~~~~~~~~~~~~~~
-
-For memory-constrained environments:
+For larger datasets, you may want to reduce the number of neighbors and epochs to get a faster result, at the cost of some cluster quality.
+In that case not setting a random seed can actually improve performance, as it allows the algorithm to skip some of the overhead 
+of ensuring reproducibility.
 
 .. code-block:: python
 
-   # Process in smaller batches or reduce parameters
    clusterer = EVoC(
-       n_neighbors=10,         # Smaller graphs
-       node_embedding_dim=8,   # Lower embedding dimension
-       max_layers=2           # Fewer layers to store
+       n_neighbors=10,         # Balance between quality and speed
+       n_epochs=30,           # Fewer epochs for faster embedding  
+       max_layers=3,          # Limit hierarchy depth
    )
+
 
 Troubleshooting
 ---------------
@@ -243,32 +201,3 @@ Troubleshooting
 **Problem**: Inconsistent results
    **Solution**: Set random_state for reproducible results
 
-Evaluation and Validation
--------------------------
-
-EVoC provides several ways to evaluate clustering quality:
-
-.. code-block:: python
-
-   # Basic cluster statistics
-   labels = clusterer.labels_
-   n_clusters = len(np.unique(labels[labels >= 0]))
-   n_noise = np.sum(labels == -1)
-
-   # Membership strength analysis
-   strengths = clusterer.membership_strengths_
-   avg_strength = np.mean(strengths[labels >= 0])  # Exclude noise points
-
-   # Layer-wise analysis
-   for i, (layer, persistence) in enumerate(zip(
-       clusterer.cluster_layers_, clusterer.persistence_scores_)):
-
-       layer_n_clusters = len(np.unique(layer[layer >= 0]))  
-       print(f"Layer {i}: {layer_n_clusters} clusters, persistence: {persistence:.3f}")
-
-   # External validation (if ground truth available)
-   from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-
-   ari = adjusted_rand_score(true_labels, labels)
-   nmi = normalized_mutual_info_score(true_labels, labels)
-   print(f"ARI: {ari:.3f}, NMI: {nmi:.3f}")
