@@ -186,9 +186,6 @@ def original_label_prop_loop(
     return remap_labels(labels)
 
 
-import matplotlib.pyplot as plt
-
-
 def label_propagation_init(
     graph,
     n_label_prop_iter=20,
