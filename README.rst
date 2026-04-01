@@ -24,6 +24,13 @@ EVōC is the library to use if you want:
  As of now this is very much an early beta version of the library. Things can and will break right now.
  We would welcome feedback, use cases and feature suggestions however.
 
+-------------
+Documentation
+-------------
+
+The full documentation is available on Read the Docs:
+`https://evoc.readthedocs.io/en/latest/ <https://evoc.readthedocs.io/en/latest/>`_
+
 -----------
 Basic Usage
 -----------
