@@ -89,6 +89,22 @@ To install the latest version of EVōC from source:
 
     pip install git+https://github.com/TutteInstitute/evoc.git
 
+
+----------
+References
+----------
+
+The algorithm implemented in EVōC is not published anywhere at this time. If you would like
+to cite something in reference to EVōC, I would encourage you to cite the PLSCAN paper
+on which the cluster extraction in EVōC is based:
+
+Please cite:
+
+    D.M. Bot, L. McInnes, J. Aerts.
+    *Persistent Multiscale Density-based Clustering.*
+    In: arXiv preprint arXiv:2512.16558, 2025.
+    https://arxiv.org/abs/2512.16558.
+    
 -------
 License
 -------
