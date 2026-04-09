@@ -207,6 +207,7 @@ def evoc_clusters(
     min_similarity_threshold=0.2,
     max_layers=10,
     n_label_prop_iter=20,
+    use_gpu=False,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -305,6 +306,12 @@ def evoc_clusters(
         The number of iterations to use in the label propagation algorithm when
         initializing the node embedding.
 
+    use_gpu : bool or str, default=False
+        Whether to use GPU acceleration for the most compute-intensive steps
+        (KNN graph, graph construction, node embedding). If ``"auto"``, GPU is
+        used when a supported backend (CUDA, MPS) is detected. If True, raises
+        an error when no GPU is available. Requires PyTorch to be installed.
+
     Returns
     -------
 
@@ -329,12 +336,42 @@ def evoc_clusters(
     if random_state is None:
         random_state = np.random.RandomState()
 
-    nn_inds, nn_dists = knn_graph(
-        data, n_neighbors=n_neighbors, random_state=random_state
-    )
-    graph = neighbor_graph_matrix(
-        neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
-    )
+    # Resolve GPU flag: "auto" checks availability, True requires GPU
+    _use_gpu = False
+    if use_gpu == "auto":
+        try:
+            from .gpu import gpu_available
+            _use_gpu = gpu_available()
+        except ImportError:
+            _use_gpu = False
+    elif use_gpu:
+        from .gpu import gpu_available
+        if not gpu_available():
+            raise RuntimeError(
+                "use_gpu=True but no GPU backend found. "
+                "Install PyTorch with CUDA/MPS support, or set use_gpu=False."
+            )
+        _use_gpu = True
+
+    if _use_gpu:
+        from .gpu.knn_gpu import knn_graph_gpu
+        from .gpu.graph_construction_gpu import neighbor_graph_matrix_gpu
+        from .gpu.node_embedding_gpu import node_embedding_gpu
+
+        nn_inds, nn_dists = knn_graph_gpu(
+            data, n_neighbors=n_neighbors
+        )
+        graph = neighbor_graph_matrix_gpu(
+            neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
+        )
+    else:
+        nn_inds, nn_dists = knn_graph(
+            data, n_neighbors=n_neighbors, random_state=random_state
+        )
+        graph = neighbor_graph_matrix(
+            neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
+        )
+
     n_embedding_components = node_embedding_dim or min(max(n_neighbors // 4, 4), 15)
     if node_embedding_init == "label_prop":
         init_embedding = label_propagation_init(
@@ -351,18 +388,32 @@ def evoc_clusters(
     elif node_embedding_init is None:
         init_embedding = None
 
-    embedding = node_embedding(
-        graph,
-        n_components=n_embedding_components,
-        n_epochs=n_epochs,
-        initial_embedding=init_embedding,
-        negative_sample_rate=1.0,
-        noise_level=noise_level,
-        random_state=random_state,
-        verbose=False,
-        reproducible_flag=reproducible_flag,
-        initial_alpha=0.1,
-    )
+    if _use_gpu:
+        embedding = node_embedding_gpu(
+            graph,
+            n_components=n_embedding_components,
+            n_epochs=n_epochs,
+            initial_embedding=init_embedding,
+            negative_sample_rate=1.0,
+            noise_level=noise_level,
+            random_state=random_state,
+            verbose=False,
+            reproducible_flag=reproducible_flag,
+            initial_alpha=0.1,
+        )
+    else:
+        embedding = node_embedding(
+            graph,
+            n_components=n_embedding_components,
+            n_epochs=n_epochs,
+            initial_embedding=init_embedding,
+            negative_sample_rate=1.0,
+            noise_level=noise_level,
+            random_state=random_state,
+            verbose=False,
+            reproducible_flag=reproducible_flag,
+            initial_alpha=0.1,
+        )
 
     if return_duplicates:
         duplicates = find_duplicates(nn_inds, nn_dists)
@@ -501,6 +552,11 @@ class EVoC(BaseEstimator, ClusterMixin):
         the label propagation process takes to converge when node_embedding_init
         is set to 'label_prop'.
 
+    use_gpu : bool or str, default=False
+        Whether to use GPU acceleration for KNN, graph construction, and node
+        embedding. Set to ``"auto"`` to use GPU when available, or True to require
+        it. Requires PyTorch with CUDA or MPS support.
+
     Attributes
     ----------
 
@@ -554,6 +610,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         min_similarity_threshold: float = 0.2,
         max_layers: int = 10,
         n_label_prop_iter=20,
+        use_gpu: bool | str = False,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
@@ -570,6 +627,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.min_similarity_threshold = min_similarity_threshold
         self.max_layers = max_layers
         self.n_label_prop_iter = n_label_prop_iter
+        self.use_gpu = use_gpu
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -631,6 +689,7 @@ class EVoC(BaseEstimator, ClusterMixin):
             min_similarity_threshold=self.min_similarity_threshold,
             max_layers=self.max_layers,
             n_label_prop_iter=self.n_label_prop_iter,
+            use_gpu=self.use_gpu,
         )
 
         if len(self.cluster_layers_) == 1:

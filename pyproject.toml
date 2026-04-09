@@ -28,7 +28,10 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+gpu = ["torch>=2.0"]
+
 [tool.setuptools]
 zip-safe = false
-packages = ["evoc"]
+packages = ["evoc", "evoc.gpu"]
 include-package-data = false
