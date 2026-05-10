@@ -28,6 +28,9 @@ dependencies = [
     "tqdm",
 ]
 
+[dependency-groups]
+cicd = ["pytest", "pytest-azurepipelines", "pytest-cov", "matplotlib"]
+
 [tool.setuptools]
 zip-safe = false
 packages = ["evoc"]
