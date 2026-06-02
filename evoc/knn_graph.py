@@ -276,7 +276,7 @@ def knn_graph(
         _input_dtype = np.int8
         _bit_trees = False
     else:
-        # If someone hands us data that einsum can't handle ...
+        # If someone hands us non-floating data, `norms` will be integer and the in-place sqrt below will fail; cast to float32.
         if (
             data.dtype != np.float32
             and data.dtype != np.float64
