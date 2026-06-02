@@ -276,6 +276,14 @@ def knn_graph(
         _input_dtype = np.int8
         _bit_trees = False
     else:
+        # If someone hands us data that einsum can't handle ...
+        if (
+            data.dtype != np.float32
+            and data.dtype != np.float64
+            and data.dtype != np.float16
+        ):
+            data = data.astype(np.float32)
+
         norms = np.einsum("ij,ij->i", data, data)
         np.sqrt(norms, norms)
         norms[norms == 0.0] = 1.0
