@@ -713,6 +713,11 @@ class TestClusteringQuality:
         # Should initialize without error
         assert isinstance(clusterer, EVoC)
 
+    def test_invalid_node_embedding_init(self):
+        data = np.random.RandomState(0).normal(size=(50, 8)).astype(np.float32)
+        with pytest.raises(ValueError, match="node_embedding_init"):
+            EVoC(node_embedding_init="random").fit(data)
+
     def test_clustering_on_clip_like_embeddings(self):
         """Test clustering on CLIP-like 512-dimensional embeddings."""
         # Simulate CLIP embeddings with multiple semantic clusters

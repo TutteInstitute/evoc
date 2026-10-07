@@ -326,6 +326,11 @@ def evoc_clusters(
         Only returned in ``return_duplicates`` is True. A set of pairs of indices of
         potential duplicate points in the data.
     """
+    if node_embedding_init not in ("label_prop", None):
+        raise ValueError(
+            f"node_embedding_init should be 'label_prop' or None, not {node_embedding_init!r}"
+        )
+
     if random_state is None:
         random_state = np.random.RandomState()
 
