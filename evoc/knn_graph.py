@@ -61,9 +61,19 @@ def make_forest(
     )
     try:
         if input_dtype == np.uint8:
+            # Bit-packed rows are small enough that the depth-first builder is
+            # faster; make_hybrid_leaf_array(..., bit=True) is available too.
             result = make_uint8_forest(data, rng_states, leaf_size, max_depth)
         elif input_dtype == np.int8:
-            result = make_int8_forest(data, rng_states, leaf_size, max_depth)
+            # Angular splits, as make_int8_forest uses
+            return make_hybrid_leaf_array(
+                data,
+                n_trees,
+                leaf_size,
+                int(random_state.randint(0, 2**62)),
+                angular=True,
+                max_depth=max_depth,
+            )
         else:
             # Leaf-only forest built breadth-first across all trees (parallel
             # within trees, not only across them). knn_graph only needs the
@@ -335,9 +345,12 @@ def knn_graph(
     if verbose:
         print(ts(), "NN descent for", str(n_iters), "iterations")
 
+    # Build the graph without self neighbours (they waste a neighbour slot and
+    # candidate slots during construction) and add each point as its own first
+    # neighbour, at distance zero, afterwards, as downstream code expects.
     neighbor_graph = nn_descent(
         data,
-        n_neighbors,
+        max(n_neighbors - 1, 1),
         rng_state,
         effective_max_candidates,
         n_iters,
@@ -356,6 +369,16 @@ def knn_graph(
             " different parameters."
         )
 
+    if n_neighbors > 1:
+        n_samples = data.shape[0]
+        n_found = neighbor_graph[0].shape[1]
+        indices = np.empty((n_samples, n_found + 1), dtype=neighbor_graph[0].dtype)
+        distances = np.empty((n_samples, n_found + 1), dtype=neighbor_graph[1].dtype)
+        indices[:, 0] = np.arange(n_samples)
+        distances[:, 0] = 0.0
+        indices[:, 1:] = neighbor_graph[0]
+        distances[:, 1:] = neighbor_graph[1]
+        neighbor_graph = (indices, distances)
     if n_jobs != -1 and n_jobs is not None:
         numba.set_num_threads(_original_num_threads)
     return neighbor_graph

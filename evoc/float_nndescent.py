@@ -451,11 +451,6 @@ def generate_leaf_updates_float(
                 if p < 0:
                     break
                 data_p = data[p]
-                if idx < max_updates:
-                    updates[t, idx, 0] = int32_bits_as_float32(p)
-                    updates[t, idx, 1] = int32_bits_as_float32(p)
-                    updates[t, idx, 2] = -1.0
-                    idx += 1
 
                 for j in range(
                     i + 1, leaf_block.shape[1]
@@ -580,7 +575,7 @@ def init_random_float(n_neighbors, data, heap, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(local_rng_state)) % data.shape[0]
-                if idx in heap[0][i]:
+                if idx == i or idx in heap[0][i]:
                     continue
                 d = fast_cosine(data[idx], data[i])
                 flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx)
@@ -656,7 +651,7 @@ def generate_graph_update_array_float_basic(
                         break
 
                     q = new_candidate_block[i, k]
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     # Compute distance once
@@ -678,7 +673,7 @@ def generate_graph_update_array_float_basic(
                         break
 
                     q = old_candidate_block[i, k]
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = fast_cosine(data_p, data[q])
@@ -779,7 +774,7 @@ def generate_graph_update_array_float(
                             break
 
                         q = new_candidate_block[i, k]
-                        if q < 0:
+                        if q < 0 or q == p:
                             continue
 
                         d = fast_cosine(data_p, data[q])
@@ -799,7 +794,7 @@ def generate_graph_update_array_float(
                             break
 
                         q = new_candidate_block[i, k]
-                        if q < 0:
+                        if q < 0 or q == p:
                             continue
 
                         d = fast_cosine(data_p, data[q])
@@ -823,7 +818,7 @@ def generate_graph_update_array_float(
                                 break
 
                             q = old_candidate_block[i, k]
-                            if q < 0:
+                            if q < 0 or q == p:
                                 continue
 
                             d = fast_cosine(data_p, data[q])
@@ -943,7 +938,7 @@ def generate_sorted_graph_update_array_float(
                         else:
                             q = old_candidate_block[i, c - n_new_after]
                         c += 1
-                        if q >= 0:
+                        if q >= 0 and q != p:
                             partners[n_found] = q
                             n_found += 1
 

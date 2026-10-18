@@ -19,6 +19,8 @@ order in which nodes are processed.
 import numpy as np
 import numba
 
+from .uint8_nndescent import popcnt_u8
+
 EPS = 1e-8
 LOCAL_SUBTREE_BYTES = 1 << 20
 _U = np.uint64
@@ -79,8 +81,10 @@ def _dense_plane(data, p, q, plane, angular):
         left_norm = np.float32(0.0)
         right_norm = np.float32(0.0)
         for d in range(dim):
-            left_norm += data[p, d] * data[p, d]
-            right_norm += data[q, d] * data[q, d]
+            xp = np.float32(data[p, d])
+            xq = np.float32(data[q, d])
+            left_norm += xp * xp
+            right_norm += xq * xq
         left_norm = np.sqrt(left_norm)
         right_norm = np.sqrt(right_norm)
         if abs(left_norm) < EPS:
@@ -89,7 +93,7 @@ def _dense_plane(data, p, q, plane, angular):
             right_norm = np.float32(1.0)
         plane_norm = np.float32(0.0)
         for d in range(dim):
-            h = data[p, d] / left_norm - data[q, d] / right_norm
+            h = np.float32(data[p, d]) / left_norm - np.float32(data[q, d]) / right_norm
             plane[d] = h
             plane_norm += h * h
         plane_norm = np.sqrt(plane_norm)
@@ -100,9 +104,11 @@ def _dense_plane(data, p, q, plane, angular):
         return np.float32(0.0)
     offset = np.float32(0.0)
     for d in range(dim):
-        h = data[p, d] - data[q, d]
+        xp = np.float32(data[p, d])
+        xq = np.float32(data[q, d])
+        h = xp - xq
         plane[d] = h
-        offset -= h * (data[p, d] + data[q, d]) * np.float32(0.5)
+        offset -= h * (xp + xq) * np.float32(0.5)
     return offset
 
 
@@ -421,6 +427,103 @@ def _sparse_local_subtrees(
             top += 1
 
 
+
+# --------------------------------------------------------------------------- bit-packed
+
+
+@numba.njit(inline="always")
+def _bit_plane(data, p, q, plane):
+    """Bits set in p but not q (first half) and in q but not p (second half)."""
+    dim = data.shape[1]
+    for d in range(dim):
+        x = data[p, d] ^ data[q, d]
+        plane[d] = x & data[p, d]
+        plane[dim + d] = x & data[q, d]
+
+
+@numba.njit(inline="always")
+def _bit_margin(x, plane):
+    dim = x.shape[0]
+    m = np.int32(0)
+    for d in range(dim):
+        m += np.int32(popcnt_u8(plane[d] & x[d])) - np.int32(popcnt_u8(plane[dim + d] & x[d]))
+    return np.float32(m)
+
+
+@numba.njit(parallel=True)
+def _bit_planes(data, perm, s_tree, s_start, s_end, s_seed, planes):
+    for s in numba.prange(s_tree.shape[0]):
+        t = s_tree[s]
+        a, b = _two_points(s_seed[s], s_end[s] - s_start[s])
+        _bit_plane(data, perm[t, s_start[s] + a], perm[t, s_start[s] + b], planes[s])
+
+
+@numba.njit(parallel=True)
+def _bit_sides(data, assign, planes, s_seed, sides):
+    n = data.shape[0]
+    n_trees = assign.shape[0]
+    for p in numba.prange(n):
+        x = data[p]
+        for t in range(n_trees):
+            s = assign[t, p]
+            if s >= 0:
+                sides[p, t] = _side(_bit_margin(x, planes[s]), s_seed[s], p)
+
+
+@numba.njit(parallel=True)
+def _bit_local_subtrees(
+    data, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth, leaf_size, max_depth
+):
+    dim = data.shape[1]
+    for s in numba.prange(d_tree.shape[0]):
+        t = d_tree[s]
+        plane = np.empty(2 * dim, np.uint8)
+        st_start = np.empty(256, np.int64)
+        st_end = np.empty(256, np.int64)
+        st_seed = np.empty(256, np.uint64)
+        st_depth = np.empty(256, np.int64)
+        st_start[0] = d_start[s]
+        st_end[0] = d_end[s]
+        st_seed[0] = d_seed[s]
+        st_depth[0] = d_depth[s]
+        top = 1
+        while top > 0:
+            top -= 1
+            a0 = st_start[top]
+            a1 = st_end[top]
+            seed = st_seed[top]
+            depth = st_depth[top]
+            size = a1 - a0
+            if size <= leaf_size or depth >= max_depth or top >= 254:
+                leaf_mark[t, a0] = 1
+                continue
+            a, b = _two_points(seed, size)
+            _bit_plane(data, perm[t, a0 + a], perm[t, a0 + b], plane)
+            lo = a0
+            hi = a1
+            while lo < hi:
+                point = perm[t, lo]
+                if _side(_bit_margin(data[point], plane), seed, point) == 0:
+                    lo += 1
+                else:
+                    hi -= 1
+                    perm[t, lo] = perm[t, hi]
+                    perm[t, hi] = point
+            left = lo - a0
+            if left == 0 or left == size:
+                left = size // 2
+            st_start[top] = a0 + left
+            st_end[top] = a1
+            st_seed[top] = _mix64(seed * _U(2) + _U(1))
+            st_depth[top] = depth + 1
+            top += 1
+            st_start[top] = a0
+            st_end[top] = a0 + left
+            st_seed[top] = _mix64(seed * _U(2))
+            st_depth[top] = depth + 1
+            top += 1
+
+
 # --------------------------------------------------------------------------- shared
 
 
@@ -483,7 +586,14 @@ def _leaves_to_array(perm, leaf_mark):
 
 
 def make_hybrid_leaf_array(
-    data, n_trees, leaf_size, seed, angular=False, max_depth=200, local_bytes=LOCAL_SUBTREE_BYTES
+    data,
+    n_trees,
+    leaf_size,
+    seed,
+    angular=False,
+    max_depth=200,
+    local_bytes=LOCAL_SUBTREE_BYTES,
+    bit=False,
 ):
     """Build a random projection forest and return only its leaves.
 
@@ -498,6 +608,9 @@ def make_hybrid_leaf_array(
         Seed from which every node's random choices are derived.
     angular: bool
         Use angular rather than euclidean splits.
+    bit: bool
+        Data is bit-packed uint8; split on bit hyperplanes (as EVoC's uint8
+        trees do) and compare with popcounts.
     max_depth: int
     local_bytes: int
         Nodes whose rows fit in this many bytes are finished depth-first.
@@ -517,7 +630,7 @@ def make_hybrid_leaf_array(
         row_bytes = max(1, int(8 * data.nnz / max(n, 1)))
     else:
         n, dim = data.shape
-        row_bytes = 4 * dim
+        row_bytes = dim * data.dtype.itemsize
     local_points = max(leaf_size, local_bytes // row_bytes)
 
     perm = np.tile(np.arange(n, dtype=np.int32), (n_trees, 1))
@@ -577,10 +690,17 @@ def make_hybrid_leaf_array(
                 offsets, s_seed, sides,
             )
         else:
-            planes = np.empty((n_split, dim), dtype=np.float32)
-            offsets = np.empty(n_split, dtype=np.float32)
-            _dense_planes(data, perm, s_tree, s_start, s_end, s_seed, planes, offsets, angular)
-            _dense_sides(data, assign, planes, offsets, s_seed, sides)
+            if bit:
+                planes = np.empty((n_split, 2 * dim), dtype=np.uint8)
+                _bit_planes(data, perm, s_tree, s_start, s_end, s_seed, planes)
+                _bit_sides(data, assign, planes, s_seed, sides)
+            else:
+                planes = np.empty((n_split, dim), dtype=np.float32)
+                offsets = np.empty(n_split, dtype=np.float32)
+                _dense_planes(
+                    data, perm, s_tree, s_start, s_end, s_seed, planes, offsets, angular
+                )
+                _dense_sides(data, assign, planes, offsets, s_seed, sides)
 
         lefts = np.empty(n_split, dtype=np.int64)
         _partition(perm, sides, s_tree, s_start, s_end, lefts)
@@ -598,6 +718,11 @@ def make_hybrid_leaf_array(
             _sparse_local_subtrees(
                 inds, indptr, values, perm, leaf_mark, d_tree, d_start, d_end, d_seed,
                 d_depth, leaf_size, max_depth, angular,
+            )
+        elif bit:
+            _bit_local_subtrees(
+                data, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth,
+                leaf_size, max_depth,
             )
         else:
             _dense_local_subtrees(
