@@ -188,7 +188,7 @@ class TestMakeForest:
         assert result_shallow.dtype == np.int32
         assert result_deep.dtype == np.int32
 
-    @patch("evoc.knn_graph.make_float_forest")
+    @patch("evoc.knn_graph.make_hybrid_leaf_array")
     def test_make_forest_exception_handling(self, mock_make_float_forest, float_data):
         """Test make_forest handles exceptions properly."""
         # Mock the forest creation to raise an exception
