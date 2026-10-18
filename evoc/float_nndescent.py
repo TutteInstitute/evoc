@@ -883,40 +883,37 @@ def generate_sorted_graph_update_array_float(
     data,
     n_threads,
 ):
-    """
-    Generate graph updates pre-sorted by target block.
+    """Generate graph updates pre-sorted by target block.
 
-    Updates are bucketed by their target vertex block so that apply_sorted_graph_updates
-    can process each bucket with perfect data locality and no wasted iteration.
+    Updates are bucketed by their target vertex block so that
+    apply_sorted_graph_updates can process each bucket with perfect data
+    locality. Each update (p, q, d) is placed in both p's bucket and q's bucket
+    (if different). update_array has shape (n_threads, max_updates_per_block, 3);
+    each source thread writes its own segment of every bucket.
 
-    Each update (p, q, d) is placed in BOTH p's bucket and q's bucket (if different),
-    ensuring that each block has all updates it needs to process.
-
-    The update_array has shape (n_threads, max_updates_per_block, 3) where:
-    - First dimension indexes the target block
-    - update_array[block, idx, 0] = p (first endpoint)
-    - update_array[block, idx, 1] = q (second endpoint)
-    - update_array[block, idx, 2] = d (distance)
+    Each new candidate p is compared with the later new candidates and then the
+    old candidates, in that order. Distances are computed four at a time,
+    sharing the loads of p, and the updates are then emitted in the same order
+    as comparing one at a time.
     """
     block_size_candidates = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
     rows_per_thread = (block_size_candidates // n_threads) + 1
-
     n_vertices = data.shape[0]
     vertex_block_size = n_vertices // n_threads + 1
     max_updates = update_array.shape[1]
     max_updates_per_src_thread = max_updates // n_threads
+    dim = data.shape[1]
 
-    # Reset update counts
     for b in numba.prange(n_threads):
         for t in range(n_threads + 1):
             n_updates_per_block[b, t] = 0
 
-    # Each thread generates updates and places them in appropriate buckets
     for t in numba.prange(n_threads):
-        # Thread-local counters for each bucket
         local_counts = np.zeros(n_threads, dtype=np.int32)
+        partners = np.empty(4, dtype=np.int32)
+        partner_dists = np.empty(4, dtype=np.float32)
 
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
@@ -934,73 +931,74 @@ def generate_sorted_graph_update_array_float(
                 if p_block >= n_threads:
                     p_block = n_threads - 1
 
-                # Compare with other new candidates
-                for k in range(j + 1, max_new_candidates):
-                    q = new_candidate_block[i, k]
-                    if q < 0:
-                        continue
+                # Partners: later new candidates, then old candidates
+                n_new_after = max_new_candidates - j - 1
+                n_partners = n_new_after + max_old_candidates
+                c = 0
+                while c < n_partners:
+                    n_found = 0
+                    while c < n_partners and n_found < 4:
+                        if c < n_new_after:
+                            q = new_candidate_block[i, j + 1 + c]
+                        else:
+                            q = old_candidate_block[i, c - n_new_after]
+                        c += 1
+                        if q >= 0:
+                            partners[n_found] = q
+                            n_found += 1
 
-                    d = fast_cosine(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+                    if n_found == 4:
+                        y0 = data[partners[0]]
+                        y1 = data[partners[1]]
+                        y2 = data[partners[2]]
+                        y3 = data[partners[3]]
+                        s0 = np.float32(0.0)
+                        s1 = np.float32(0.0)
+                        s2 = np.float32(0.0)
+                        s3 = np.float32(0.0)
+                        for dd in range(dim):
+                            xv = data_p[dd]
+                            s0 += xv * y0[dd]
+                            s1 += xv * y1[dd]
+                            s2 += xv * y2[dd]
+                            s3 += xv * y3[dd]
+                        # Same transform as fast_cosine
+                        partner_dists[0] = -s0 if s0 > 0.0 else -EXP_NEG_INF
+                        partner_dists[1] = -s1 if s1 > 0.0 else -EXP_NEG_INF
+                        partner_dists[2] = -s2 if s2 > 0.0 else -EXP_NEG_INF
+                        partner_dists[3] = -s3 if s3 > 0.0 else -EXP_NEG_INF
+                    else:
+                        for rr in range(n_found):
+                            partner_dists[rr] = fast_cosine(data_p, data[partners[rr]])
 
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
+                    for rr in range(n_found):
+                        q = partners[rr]
+                        d = partner_dists[rr]
+                        dist_thresh_q = dist_thresholds[q]
+                        max_threshold = max(dist_thresh_p, dist_thresh_q)
 
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if bucket_idx < max_updates_per_src_thread:
-                            update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
-                            update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
+                        if d <= max_threshold:
+                            q_block = q // vertex_block_size
+                            if q_block >= n_threads:
+                                q_block = n_threads - 1
 
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
+                            bucket_idx = local_counts[p_block]
                             write_idx = t * max_updates_per_src_thread + bucket_idx
                             if bucket_idx < max_updates_per_src_thread:
-                                update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
-                                update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                                update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
+                                update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
+                                update_array[p_block, write_idx, 2] = d
+                                local_counts[p_block] += 1
 
-                # Compare with old candidates
-                for k in range(max_old_candidates):
-                    q = old_candidate_block[i, k]
-                    if q < 0:
-                        continue
-
-                    d = fast_cosine(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
-
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
-
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if bucket_idx < max_updates_per_src_thread:
-                            update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
-                            update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
-
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
-                            write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if bucket_idx < max_updates_per_src_thread:
-                                update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
-                                update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                            # If q is in a different block, also place in q's bucket
+                            if q_block != p_block:
+                                bucket_idx = local_counts[q_block]
+                                write_idx = t * max_updates_per_src_thread + bucket_idx
+                                if bucket_idx < max_updates_per_src_thread:
+                                    update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
+                                    update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
+                                    update_array[q_block, write_idx, 2] = d
+                                    local_counts[q_block] += 1
 
         # Record total updates generated by this thread for each bucket
         for b in range(n_threads):
