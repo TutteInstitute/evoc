@@ -16,6 +16,7 @@ from .uint8_nndescent import (
     nn_descent_uint8_sorted,
 )
 from .int8_nndescent import make_int8_forest, nn_descent_int8, nn_descent_int8_sorted
+from .hybrid_forest import make_hybrid_leaf_array
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -64,7 +65,17 @@ def make_forest(
         elif input_dtype == np.int8:
             result = make_int8_forest(data, rng_states, leaf_size, max_depth)
         else:
-            result = make_float_forest(data, rng_states, leaf_size, max_depth)
+            # Leaf-only forest built breadth-first across all trees (parallel
+            # within trees, not only across them). knn_graph only needs the
+            # leaves. Data is normalised, so splits are angular.
+            return make_hybrid_leaf_array(
+                data,
+                n_trees,
+                leaf_size,
+                int(random_state.randint(0, 2**62)),
+                angular=True,
+                max_depth=max_depth,
+            )
     except (RuntimeError, RecursionError, SystemError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
