@@ -13,6 +13,7 @@ from .common_nndescent import (
     deheap_sort,
     flagged_heap_push,
     build_candidates,
+    build_candidates_owner,
     apply_graph_update_array,
     apply_sorted_graph_updates,
 )
@@ -939,12 +940,40 @@ def nn_descent_uint8(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0
@@ -1056,12 +1085,40 @@ def nn_descent_uint8_sorted(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0
