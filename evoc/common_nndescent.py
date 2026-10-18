@@ -2,6 +2,44 @@ import numpy as np
 import numba
 
 
+
+# ---------------------------------------------------------------------------
+# Graph update buffers are float32 arrays of (p, q, d) records. The vertex ids p
+# and q are stored as the raw bits of an int32 rather than converted to float32
+# values, which cannot represent ids above 2**24 exactly. These intrinsics
+# reinterpret the bits (an LLVM bitcast, which costs nothing). Never perform
+# arithmetic or comparisons on the float32 form of an id.
+# ---------------------------------------------------------------------------
+from numba import types as _nb_types
+from numba.extending import intrinsic as _nb_intrinsic
+from llvmlite import ir as _llvm_ir
+
+
+@_nb_intrinsic
+def int32_bits_as_float32(typingctx, x):
+    """Store an integer vertex id in a float32 slot without changing its bits."""
+    if not isinstance(x, _nb_types.Integer):
+        return None
+
+    def codegen(context, builder, sig, args):
+        val = context.cast(builder, args[0], sig.args[0], _nb_types.int32)
+        return builder.bitcast(val, _llvm_ir.FloatType())
+
+    return _nb_types.float32(x), codegen
+
+
+@_nb_intrinsic
+def float32_bits_as_int32(typingctx, x):
+    """Recover a vertex id stored with int32_bits_as_float32."""
+    if not isinstance(x, _nb_types.Float) or x.bitwidth != 32:
+        return None
+
+    def codegen(context, builder, sig, args):
+        return builder.bitcast(args[0], _llvm_ir.IntType(32))
+
+    return _nb_types.int32(x), codegen
+
+
 @numba.njit("void(i8[:], i8)", cache=True)
 def seed(rng_state, seed):
     """Seed the random number generator with a given seed."""
@@ -136,9 +174,18 @@ def build_candidates_heap_push(priorities, indices, p, n):
     size = priorities.shape[0]
 
     # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # Duplicate check. For wider heaps a branch-free reduction (no early exit)
+    # lets LLVM vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -300,9 +347,18 @@ def flagged_heap_push(priorities, indices, flags, p, n):
     size = priorities.shape[0]
 
     # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # Duplicate check. For wider heaps a branch-free reduction (no early exit)
+    # lets LLVM vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -387,12 +443,12 @@ def apply_graph_update_array(
 
         for i in range(update_array.shape[0]):
             for j in range(n_updates_per_thread[i]):
-                p = np.int32(update_array[i, j, 0])
+                p = float32_bits_as_int32(update_array[i, j, 0])
 
                 if p == -1:
                     break
 
-                q = np.int32(update_array[i, j, 1])
+                q = float32_bits_as_int32(update_array[i, j, 1])
                 d = np.float32(update_array[i, j, 2])
 
                 if p >= block_start and p < block_end:
@@ -460,8 +516,8 @@ def apply_sorted_graph_updates(
 
             for j in range(thread_count):
                 idx = thread_start + j
-                p = np.int32(update_array[n, idx, 0])
-                q = np.int32(update_array[n, idx, 1])
+                p = float32_bits_as_int32(update_array[n, idx, 0])
+                q = float32_bits_as_int32(update_array[n, idx, 1])
                 d = np.float32(update_array[n, idx, 2])
 
                 # Apply update to p if it's in this block

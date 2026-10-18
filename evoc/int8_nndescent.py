@@ -2,6 +2,8 @@ import numba
 import numpy as np
 
 from .common_nndescent import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     make_heap,
     deheap_sort,
@@ -33,7 +35,6 @@ INF = np.float32(np.inf)
     locals={
         "result": numba.types.int32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -401,6 +402,7 @@ def generate_leaf_updates_int8(
     block_size = leaf_block.shape[0]
     rows_per_thread = (block_size // n_threads) + 1
 
+    max_updates = updates.shape[1]
     for t in numba.prange(n_threads):
         idx = 0
         for r in range(rows_per_thread):
@@ -421,10 +423,11 @@ def generate_leaf_updates_int8(
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                        updates[t, idx, 0] = p
-                        updates[t, idx, 1] = q
-                        updates[t, idx, 2] = d
-                        idx += 1
+                        if idx < max_updates:
+                            updates[t, idx, 0] = int32_bits_as_float32(p)
+                            updates[t, idx, 1] = int32_bits_as_float32(q)
+                            updates[t, idx, 2] = d
+                            idx += 1
 
         n_updates_per_thread[t] = idx
 
@@ -488,8 +491,8 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
 
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-                    q = np.int32(updates[j, k, 1])
+                    p = float32_bits_as_int32(updates[j, k, 0])
+                    q = float32_bits_as_int32(updates[j, k, 1])
                     d = np.float32(updates[j, k, 2])
 
                     if p == -1 or q == -1:
@@ -591,8 +594,8 @@ def generate_graph_update_array_int8(
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -609,8 +612,8 @@ def generate_graph_update_array_int8(
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -718,9 +721,9 @@ def generate_sorted_graph_update_array_int8(
                         # Place update in p's bucket
                         bucket_idx = local_counts[p_block]
                         write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
+                        if bucket_idx < max_updates_per_src_thread:
+                            update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
+                            update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
                             update_array[p_block, write_idx, 2] = d
                             local_counts[p_block] += 1
 
@@ -728,9 +731,9 @@ def generate_sorted_graph_update_array_int8(
                         if q_block != p_block:
                             bucket_idx = local_counts[q_block]
                             write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
+                            if bucket_idx < max_updates_per_src_thread:
+                                update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
+                                update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
                                 update_array[q_block, write_idx, 2] = d
                                 local_counts[q_block] += 1
 
@@ -752,9 +755,9 @@ def generate_sorted_graph_update_array_int8(
                         # Place update in p's bucket
                         bucket_idx = local_counts[p_block]
                         write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
+                        if bucket_idx < max_updates_per_src_thread:
+                            update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
+                            update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
                             update_array[p_block, write_idx, 2] = d
                             local_counts[p_block] += 1
 
@@ -762,9 +765,9 @@ def generate_sorted_graph_update_array_int8(
                         if q_block != p_block:
                             bucket_idx = local_counts[q_block]
                             write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
+                            if bucket_idx < max_updates_per_src_thread:
+                                update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
+                                update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
                                 update_array[q_block, write_idx, 2] = d
                                 local_counts[q_block] += 1
 
