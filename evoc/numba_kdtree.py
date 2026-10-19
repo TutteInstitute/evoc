@@ -4,9 +4,11 @@ import numpy as np
 from collections import namedtuple
 
 NumbaKDTree = namedtuple(
-    "NumbaKDTree",
+    "EVoCNumbaKDTree",
     ["data", "idx_array", "idx_start", "idx_end", "radius", "is_leaf", "node_bounds"],
 )
+# Numba and pickle look the class up by its type name, so it must resolve here.
+EVoCNumbaKDTree = NumbaKDTree
 NodeData = namedtuple("NodeData", ["idx_start", "idx_end", "radius", "is_leaf"])
 
 NodeDataType = numba.types.NamedTuple(

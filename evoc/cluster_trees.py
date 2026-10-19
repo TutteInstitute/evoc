@@ -130,8 +130,10 @@ def eliminate_branch(
 
 
 CondensedTree = namedtuple(
-    "CondensedTree", ["parent", "child", "lambda_val", "child_size"]
+    "EVoCCondensedTree", ["parent", "child", "lambda_val", "child_size"]
 )
+# Numba and pickle look the class up by its type name, so it must resolve here.
+EVoCCondensedTree = CondensedTree
 
 
 @numba.njit(fastmath=True, cache=True)
