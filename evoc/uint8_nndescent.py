@@ -6,11 +6,14 @@ from numba.extending import intrinsic
 import llvmlite.ir as ir
 
 from .common_nndescent import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     make_heap,
     deheap_sort,
     flagged_heap_push,
     build_candidates,
+    build_candidates_owner,
     apply_graph_update_array,
     apply_sorted_graph_updates,
 )
@@ -62,6 +65,30 @@ def popcnt_u64(typingctx, val):
     return sig, popcnt_u64_impl
 
 
+@intrinsic
+def load_u64_unaligned(typingctx, arr, offset):
+    """Load the 8 bytes starting at arr[offset] as a uint64.
+
+    Bit-packed rows are rarely 8-byte aligned (a row of 98 bytes, say), so the
+    load declares alignment 1 rather than the natural alignment of a uint64;
+    claiming more alignment than the data has is undefined behaviour in LLVM.
+    """
+    if not (
+        isinstance(arr, types.Array) and arr.dtype == types.uint8 and arr.ndim == 1
+    ):
+        return None
+
+    def codegen(context, builder, sig, args):
+        aryty = sig.args[0]
+        ary = context.make_array(aryty)(context, builder, args[0])
+        off = context.cast(builder, args[1], sig.args[1], types.intp)
+        ptr = builder.gep(ary.data, [off])
+        ptr_u64 = builder.bitcast(ptr, ir.IntType(64).as_pointer())
+        return builder.load(ptr_u64, align=1)
+
+    return types.uint64(arr, offset), codegen
+
+
 @numba.njit(
     [
         "f4(u1[::1],u1[::1])",
@@ -75,17 +102,25 @@ def popcnt_u64(typingctx, val):
     nogil=True,
 )
 def fast_bit_jaccard(x, y):
-    """Binary Jaccard using hardware POPCNT instruction."""
-    result = np.uint32(0)
-    denom = np.uint32(0)
+    """Negative Jaccard similarity of two bit-packed vectors.
+
+    Counts bits 64 at a time (hardware popcount on 64-bit words, loaded without
+    assuming alignment), then counts any remaining bytes individually. The
+    counts are exact, so results are identical to counting byte by byte.
+    """
     dim = x.shape[0]
-
-    for i in range(dim):
-        and_val = x[i] & y[i]
-        or_val = x[i] | y[i]
-        result += popcnt_u8(and_val)
-        denom += popcnt_u8(or_val)
-
+    n_words = dim // 8
+    result = np.uint64(0)
+    denom = np.uint64(0)
+    for w in range(n_words):
+        offset = w * 8
+        x_val = load_u64_unaligned(x, offset)
+        y_val = load_u64_unaligned(y, offset)
+        result += popcnt_u64(x_val & y_val)
+        denom += popcnt_u64(x_val | y_val)
+    for d in range(n_words * 8, dim):
+        result += popcnt_u8(x[d] & y[d])
+        denom += popcnt_u8(x[d] | y[d])
     if denom > 0:
         return -(np.float32(result) / np.float32(denom))
     else:
@@ -97,6 +132,8 @@ def load_u64_from_u8_array(typingctx, arr, offset):
     """Load a uint64 from a uint8 array at given byte offset."""
     sig = types.uint64(types.Array(types.uint8, 1, "C"), types.intp)
 
+    # Note: this load assumes the natural 8-byte alignment of a uint64, which
+    # rows of bit-packed data generally do not have; use load_u64_unaligned.
     def load_u64_impl(context, builder, sig, args):
         [arr, offset] = args
 
@@ -253,9 +290,21 @@ def uint8_random_projection_split(data, indices, rng_state):
         margin = 0.0
         local_rng_state = rng_state + np.int64(i)
         test_data = data[indices[i]]
-        for d in range(dim):
-            margin += popcnt_u8(positive_hyperplane_component[d] & test_data[d])
-            margin -= popcnt_u8(negative_hyperplane_component[d] & test_data[d])
+        n_words = dim // 8
+        int_margin = np.int64(0)
+        for w in range(n_words):
+            offset = w * 8
+            x_val = load_u64_unaligned(test_data, offset)
+            int_margin += np.int64(
+                popcnt_u64(load_u64_unaligned(positive_hyperplane_component, offset) & x_val)
+            )
+            int_margin -= np.int64(
+                popcnt_u64(load_u64_unaligned(negative_hyperplane_component, offset) & x_val)
+            )
+        for d in range(n_words * 8, dim):
+            int_margin += np.int64(popcnt_u8(positive_hyperplane_component[d] & test_data[d]))
+            int_margin -= np.int64(popcnt_u8(negative_hyperplane_component[d] & test_data[d]))
+        margin += np.float64(int_margin)
 
         if abs(margin) < EPS:
             side[i] = np.bool_(tau_rand_int(local_rng_state) % 2)
@@ -511,6 +560,7 @@ def generate_leaf_updates_uint8(
     block_size = leaf_block.shape[0]
     rows_per_thread = (block_size // n_threads) + 1
 
+    max_updates = updates.shape[1]
     for t in numba.prange(n_threads):
         idx = 0
         for r in range(rows_per_thread):
@@ -524,17 +574,18 @@ def generate_leaf_updates_uint8(
                     break
                 data_p = data[p]
 
-                for j in range(i, leaf_block.shape[1]):
+                for j in range(i + 1, leaf_block.shape[1]):
                     q = leaf_block[n, j]
                     if q < 0:
                         break
 
                     d = fast_bit_jaccard(data_p, data[q])
                     if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                        updates[t, idx, 0] = p
-                        updates[t, idx, 1] = q
-                        updates[t, idx, 2] = d
-                        idx += 1
+                        if idx < max_updates:
+                            updates[t, idx, 0] = int32_bits_as_float32(p)
+                            updates[t, idx, 1] = int32_bits_as_float32(q)
+                            updates[t, idx, 2] = d
+                            idx += 1
 
         n_updates_per_thread[t] = idx
 
@@ -598,8 +649,8 @@ def init_rp_tree_uint8(data, current_graph, leaf_array, n_threads):
 
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-                    q = np.int32(updates[j, k, 1])
+                    p = float32_bits_as_int32(updates[j, k, 0])
+                    q = float32_bits_as_int32(updates[j, k, 1])
                     d = np.float32(updates[j, k, 2])
 
                     if p == -1 or q == -1:
@@ -641,7 +692,7 @@ def init_random_uint8(n_neighbors, data, heap, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-                if idx in heap[0][i]:
+                if idx == i or idx in heap[0][i]:
                     continue
                 d = fast_bit_jaccard(data[idx], data[i])
                 flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx)
@@ -694,15 +745,15 @@ def generate_graph_update_array_uint8(
                     continue
                 data_p = data[p]
 
-                for k in range(j, max_new_candidates):
+                for k in range(j + 1, max_new_candidates):
                     q = int(new_candidate_block[i, k])
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = fast_bit_jaccard(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -714,13 +765,13 @@ def generate_graph_update_array_uint8(
 
                 for k in range(max_old_candidates):
                     q = int(old_candidate_block[i, k])
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = fast_bit_jaccard(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -771,28 +822,37 @@ def generate_sorted_graph_update_array_uint8(
     data,
     n_threads,
 ):
-    """
-    Generate graph updates pre-sorted by target block for uint8 data.
+    """Generate graph updates pre-sorted by target block.
+
+    Updates are bucketed by their target vertex block so that
+    apply_sorted_graph_updates can process each bucket with perfect data
+    locality. Each update (p, q, d) is placed in both p's bucket and q's bucket
+    (if different). update_array has shape (n_threads, max_updates_per_block, 3);
+    each source thread writes its own segment of every bucket.
+
+    Each new candidate p is compared with the later new candidates and then the
+    old candidates, in that order. (For bit-packed data, fast_bit_jaccard's
+    64-bit popcounts already make each distance cheap; computing four at a
+    time does not help.)
     """
     block_size_candidates = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
     rows_per_thread = (block_size_candidates // n_threads) + 1
-
     n_vertices = data.shape[0]
     vertex_block_size = n_vertices // n_threads + 1
     max_updates = update_array.shape[1]
     max_updates_per_src_thread = max_updates // n_threads
+    dim = data.shape[1]
 
-    # Reset update counts
     for b in numba.prange(n_threads):
         for t in range(n_threads + 1):
             n_updates_per_block[b, t] = 0
 
-    # Each thread generates updates and places them in appropriate buckets
     for t in numba.prange(n_threads):
-        # Thread-local counters for each bucket
         local_counts = np.zeros(n_threads, dtype=np.int32)
+        partners = np.empty(4, dtype=np.int32)
+        partner_dists = np.empty(4, dtype=np.float32)
 
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
@@ -810,73 +870,53 @@ def generate_sorted_graph_update_array_uint8(
                 if p_block >= n_threads:
                     p_block = n_threads - 1
 
-                # Compare with other new candidates
-                for k in range(j, max_new_candidates):
-                    q = new_candidate_block[i, k]
-                    if q < 0:
-                        continue
+                # Partners: later new candidates, then old candidates
+                n_new_after = max_new_candidates - j - 1
+                n_partners = n_new_after + max_old_candidates
+                c = 0
+                while c < n_partners:
+                    n_found = 0
+                    while c < n_partners and n_found < 4:
+                        if c < n_new_after:
+                            q = new_candidate_block[i, j + 1 + c]
+                        else:
+                            q = old_candidate_block[i, c - n_new_after]
+                        c += 1
+                        if q >= 0 and q != p:
+                            partners[n_found] = q
+                            n_found += 1
 
-                    d = fast_bit_jaccard(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+                    for rr in range(n_found):
+                        partner_dists[rr] = fast_bit_jaccard(data_p, data[partners[rr]])
 
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
+                    for rr in range(n_found):
+                        q = partners[rr]
+                        d = partner_dists[rr]
+                        dist_thresh_q = dist_thresholds[q]
+                        max_threshold = max(dist_thresh_p, dist_thresh_q)
 
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
+                        if d <= max_threshold:
+                            q_block = q // vertex_block_size
+                            if q_block >= n_threads:
+                                q_block = n_threads - 1
 
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
+                            bucket_idx = local_counts[p_block]
                             write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                            if bucket_idx < max_updates_per_src_thread:
+                                update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
+                                update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
+                                update_array[p_block, write_idx, 2] = d
+                                local_counts[p_block] += 1
 
-                # Compare with old candidates
-                for k in range(max_old_candidates):
-                    q = old_candidate_block[i, k]
-                    if q < 0:
-                        continue
-
-                    d = fast_bit_jaccard(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
-
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
-
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
-
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
-                            write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                            # If q is in a different block, also place in q's bucket
+                            if q_block != p_block:
+                                bucket_idx = local_counts[q_block]
+                                write_idx = t * max_updates_per_src_thread + bucket_idx
+                                if bucket_idx < max_updates_per_src_thread:
+                                    update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
+                                    update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
+                                    update_array[q_block, write_idx, 2] = d
+                                    local_counts[q_block] += 1
 
         # Record total updates generated by this thread for each bucket
         for b in range(n_threads):
@@ -935,12 +975,40 @@ def nn_descent_uint8(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0
@@ -1052,12 +1120,40 @@ def nn_descent_uint8_sorted(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0

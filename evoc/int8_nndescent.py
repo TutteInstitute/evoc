@@ -2,11 +2,14 @@ import numba
 import numpy as np
 
 from .common_nndescent import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     make_heap,
     deheap_sort,
     flagged_heap_push,
     build_candidates,
+    build_candidates_owner,
     apply_graph_update_array,
     apply_sorted_graph_updates,
 )
@@ -33,7 +36,6 @@ INF = np.float32(np.inf)
     locals={
         "result": numba.types.int32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -401,6 +403,7 @@ def generate_leaf_updates_int8(
     block_size = leaf_block.shape[0]
     rows_per_thread = (block_size // n_threads) + 1
 
+    max_updates = updates.shape[1]
     for t in numba.prange(n_threads):
         idx = 0
         for r in range(rows_per_thread):
@@ -414,17 +417,18 @@ def generate_leaf_updates_int8(
                     break
                 data_p = data[p]
 
-                for j in range(i, leaf_block.shape[1]):
+                for j in range(i + 1, leaf_block.shape[1]):
                     q = leaf_block[n, j]
                     if q < 0:
                         break
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                        updates[t, idx, 0] = p
-                        updates[t, idx, 1] = q
-                        updates[t, idx, 2] = d
-                        idx += 1
+                        if idx < max_updates:
+                            updates[t, idx, 0] = int32_bits_as_float32(p)
+                            updates[t, idx, 1] = int32_bits_as_float32(q)
+                            updates[t, idx, 2] = d
+                            idx += 1
 
         n_updates_per_thread[t] = idx
 
@@ -488,8 +492,8 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
 
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-                    q = np.int32(updates[j, k, 1])
+                    p = float32_bits_as_int32(updates[j, k, 0])
+                    q = float32_bits_as_int32(updates[j, k, 1])
                     d = np.float32(updates[j, k, 2])
 
                     if p == -1 or q == -1:
@@ -531,7 +535,7 @@ def init_random_int8(n_neighbors, data, heap, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-                if idx in heap[0][i]:
+                if idx == i or idx in heap[0][i]:
                     continue
                 d = fast_int_inner_product_dissimilarity(data[idx], data[i])
                 flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx)
@@ -584,15 +588,15 @@ def generate_graph_update_array_int8(
                     continue
                 data_p = data[p]
 
-                for k in range(j, max_new_candidates):
+                for k in range(j + 1, max_new_candidates):
                     q = int(new_candidate_block[i, k])
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -604,13 +608,13 @@ def generate_graph_update_array_int8(
 
                 for k in range(max_old_candidates):
                     q = int(old_candidate_block[i, k])
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = fast_int_inner_product_dissimilarity(data_p, data[q])
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
                         if idx >= update_array.shape[1]:
@@ -661,28 +665,37 @@ def generate_sorted_graph_update_array_int8(
     data,
     n_threads,
 ):
-    """
-    Generate graph updates pre-sorted by target block for int8 data.
+    """Generate graph updates pre-sorted by target block.
+
+    Updates are bucketed by their target vertex block so that
+    apply_sorted_graph_updates can process each bucket with perfect data
+    locality. Each update (p, q, d) is placed in both p's bucket and q's bucket
+    (if different). update_array has shape (n_threads, max_updates_per_block, 3);
+    each source thread writes its own segment of every bucket.
+
+    Each new candidate p is compared with the later new candidates and then the
+    old candidates, in that order. Distances are computed four at a time,
+    sharing the loads of p, and the updates are then emitted in the same order
+    as comparing one at a time.
     """
     block_size_candidates = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
     rows_per_thread = (block_size_candidates // n_threads) + 1
-
     n_vertices = data.shape[0]
     vertex_block_size = n_vertices // n_threads + 1
     max_updates = update_array.shape[1]
     max_updates_per_src_thread = max_updates // n_threads
+    dim = data.shape[1]
 
-    # Reset update counts
     for b in numba.prange(n_threads):
         for t in range(n_threads + 1):
             n_updates_per_block[b, t] = 0
 
-    # Each thread generates updates and places them in appropriate buckets
     for t in numba.prange(n_threads):
-        # Thread-local counters for each bucket
         local_counts = np.zeros(n_threads, dtype=np.int32)
+        partners = np.empty(4, dtype=np.int32)
+        partner_dists = np.empty(4, dtype=np.float32)
 
         for r in range(rows_per_thread):
             i = t * rows_per_thread + r
@@ -700,73 +713,74 @@ def generate_sorted_graph_update_array_int8(
                 if p_block >= n_threads:
                     p_block = n_threads - 1
 
-                # Compare with other new candidates
-                for k in range(j, max_new_candidates):
-                    q = new_candidate_block[i, k]
-                    if q < 0:
-                        continue
+                # Partners: later new candidates, then old candidates
+                n_new_after = max_new_candidates - j - 1
+                n_partners = n_new_after + max_old_candidates
+                c = 0
+                while c < n_partners:
+                    n_found = 0
+                    while c < n_partners and n_found < 4:
+                        if c < n_new_after:
+                            q = new_candidate_block[i, j + 1 + c]
+                        else:
+                            q = old_candidate_block[i, c - n_new_after]
+                        c += 1
+                        if q >= 0 and q != p:
+                            partners[n_found] = q
+                            n_found += 1
 
-                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+                    if n_found == 4:
+                        y0 = data[partners[0]]
+                        y1 = data[partners[1]]
+                        y2 = data[partners[2]]
+                        y3 = data[partners[3]]
+                        s0 = np.int32(0)
+                        s1 = np.int32(0)
+                        s2 = np.int32(0)
+                        s3 = np.int32(0)
+                        for dd in range(dim):
+                            xv = np.int32(data_p[dd])
+                            s0 += xv * np.int32(y0[dd])
+                            s1 += xv * np.int32(y1[dd])
+                            s2 += xv * np.int32(y2[dd])
+                            s3 += xv * np.int32(y3[dd])
+                        # Same transform as fast_int_inner_product_dissimilarity
+                        partner_dists[0] = -np.float32(s0)
+                        partner_dists[1] = -np.float32(s1)
+                        partner_dists[2] = -np.float32(s2)
+                        partner_dists[3] = -np.float32(s3)
+                    else:
+                        for rr in range(n_found):
+                            partner_dists[rr] = fast_int_inner_product_dissimilarity(data_p, data[partners[rr]])
 
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
+                    for rr in range(n_found):
+                        q = partners[rr]
+                        d = partner_dists[rr]
+                        dist_thresh_q = dist_thresholds[q]
+                        max_threshold = max(dist_thresh_p, dist_thresh_q)
 
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
+                        if d <= max_threshold:
+                            q_block = q // vertex_block_size
+                            if q_block >= n_threads:
+                                q_block = n_threads - 1
 
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
+                            bucket_idx = local_counts[p_block]
                             write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                            if bucket_idx < max_updates_per_src_thread:
+                                update_array[p_block, write_idx, 0] = int32_bits_as_float32(p)
+                                update_array[p_block, write_idx, 1] = int32_bits_as_float32(q)
+                                update_array[p_block, write_idx, 2] = d
+                                local_counts[p_block] += 1
 
-                # Compare with old candidates
-                for k in range(max_old_candidates):
-                    q = old_candidate_block[i, k]
-                    if q < 0:
-                        continue
-
-                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
-                    max_threshold = max(dist_thresh_p, dist_thresh_q)
-
-                    if d <= max_threshold:
-                        q_block = q // vertex_block_size
-                        if q_block >= n_threads:
-                            q_block = n_threads - 1
-
-                        # Place update in p's bucket
-                        bucket_idx = local_counts[p_block]
-                        write_idx = t * max_updates_per_src_thread + bucket_idx
-                        if write_idx < max_updates:
-                            update_array[p_block, write_idx, 0] = p
-                            update_array[p_block, write_idx, 1] = q
-                            update_array[p_block, write_idx, 2] = d
-                            local_counts[p_block] += 1
-
-                        # If q is in a different block, also place in q's bucket
-                        if q_block != p_block:
-                            bucket_idx = local_counts[q_block]
-                            write_idx = t * max_updates_per_src_thread + bucket_idx
-                            if write_idx < max_updates:
-                                update_array[q_block, write_idx, 0] = p
-                                update_array[q_block, write_idx, 1] = q
-                                update_array[q_block, write_idx, 2] = d
-                                local_counts[q_block] += 1
+                            # If q is in a different block, also place in q's bucket
+                            if q_block != p_block:
+                                bucket_idx = local_counts[q_block]
+                                write_idx = t * max_updates_per_src_thread + bucket_idx
+                                if bucket_idx < max_updates_per_src_thread:
+                                    update_array[q_block, write_idx, 0] = int32_bits_as_float32(p)
+                                    update_array[q_block, write_idx, 1] = int32_bits_as_float32(q)
+                                    update_array[q_block, write_idx, 2] = d
+                                    local_counts[q_block] += 1
 
         # Record total updates generated by this thread for each bucket
         for b in range(n_threads):
@@ -825,12 +839,40 @@ def nn_descent_int8(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0
@@ -945,12 +987,40 @@ def nn_descent_int8_sorted(
     # For distance-based termination
     prev_sum_dist = None
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    _n_vertices = current_graph[0].shape[0]
+    _n_neighbors = current_graph[0].shape[1]
+    new_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((_n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (_n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    candidate_active = np.ones(_n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge)
+    reverse_dst = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(_n_vertices * _n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            candidate_active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = 0

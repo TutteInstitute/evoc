@@ -188,7 +188,7 @@ class TestMakeForest:
         assert result_shallow.dtype == np.int32
         assert result_deep.dtype == np.int32
 
-    @patch("evoc.knn_graph.make_float_forest")
+    @patch("evoc.knn_graph.make_hybrid_leaf_array")
     def test_make_forest_exception_handling(self, mock_make_float_forest, float_data):
         """Test make_forest handles exceptions properly."""
         # Mock the forest creation to raise an exception
@@ -337,6 +337,34 @@ class TestNNDescent:
 
 class TestKNNGraph:
     """Test the main knn_graph function."""
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int8, np.uint8])
+    @pytest.mark.parametrize("n_samples", [1, 4])
+    @pytest.mark.parametrize("use_sorted_updates", [True, False])
+    def test_knn_graph_single_neighbor(self, dtype, n_samples, use_sorted_updates):
+        """A single requested neighbor is always the point itself."""
+        data = np.arange(1, n_samples * 3 + 1, dtype=dtype).reshape(n_samples, 3)
+        with (
+            patch("evoc.knn_graph.make_forest") as mock_make_forest,
+            patch("evoc.knn_graph.nn_descent") as mock_nn_descent,
+            patch("numba.set_num_threads") as mock_set_threads,
+        ):
+            indices, distances = knn_graph(
+                data,
+                n_neighbors=1,
+                random_state=42,
+                n_jobs=1,
+                use_sorted_updates=use_sorted_updates,
+            )
+
+            mock_make_forest.assert_not_called()
+            mock_nn_descent.assert_not_called()
+            mock_set_threads.assert_not_called()
+
+        np.testing.assert_array_equal(indices, np.arange(n_samples)[:, None])
+        np.testing.assert_array_equal(distances, np.zeros((n_samples, 1)))
+        assert indices.dtype == np.int32
+        assert distances.dtype == np.float32
 
     @pytest.fixture
     def float_test_data(self):
