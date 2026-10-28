@@ -310,6 +310,13 @@ def knn_graph(
         _input_dtype = np.float32
         _bit_trees = False
 
+    if n_neighbors == 1:
+        n_samples = data.shape[0]
+        return (
+            np.arange(n_samples, dtype=np.int32).reshape(-1, 1),
+            np.zeros((n_samples, 1), dtype=np.float32),
+        )
+
     current_random_state = check_random_state(random_state)
     rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
