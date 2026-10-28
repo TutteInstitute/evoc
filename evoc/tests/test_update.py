@@ -394,3 +394,46 @@ def test_expire_whole_cluster(window_case):
     model.update(X[N_WINDOW:][y[N_WINDOW:] != 0][:STEP], X_expired=gone)
     assert model.labels_.shape == (N_WINDOW - gone.sum() + STEP,)
     assert np.all(model.nn_inds_ < model.labels_.shape[0])
+
+
+# ------------------------------------------------------- repair distance kernels
+import numba
+
+from evoc.float_nndescent import fast_cosine
+from evoc.int8_nndescent import fast_int_cosine_dissimilarity, int8_inverse_norms
+from evoc.search.kernels import four_internal_distances_to, internal_distance_to
+from evoc.uint8_nndescent import fast_bit_jaccard
+
+
+@numba.njit
+def _internal_single_and_four(data, inv_norms, a, candidates):
+    inv_a = inv_norms[a] if inv_norms.shape[0] > 0 else np.float32(1.0)
+    single = np.empty(candidates.shape[0], dtype=np.float32)
+    for i in range(candidates.shape[0]):
+        single[i] = internal_distance_to(data[a], inv_a, data, inv_norms, candidates[i])
+    four = np.empty(candidates.shape[0], dtype=np.float32)
+    out = np.empty(4, dtype=np.float32)
+    for q in range(0, candidates.shape[0], 4):
+        four_internal_distances_to(data[a], inv_a, data, inv_norms, candidates[q : q + 4], out)
+        four[q : q + 4] = out
+    return single, four
+
+
+@pytest.mark.parametrize("dtype", ["float", "uint8", "int8"])
+def test_internal_distance_kernels_match_nndescent(dtype):
+    X, _ = _data(dtype, n=200)
+    data, inv_norms = prepare_data(X)
+    candidates = np.arange(1, 41, dtype=np.int32)
+    single, four = _internal_single_and_four(data, inv_norms, 0, candidates)
+    if dtype == "float":
+        expected = [fast_cosine(data[0], data[c]) for c in candidates]
+    elif dtype == "int8":
+        inv = int8_inverse_norms(data)
+        expected = [
+            fast_int_cosine_dissimilarity(data[0], data[c], inv[0], inv[c])
+            for c in candidates
+        ]
+    else:
+        expected = [fast_bit_jaccard(data[0], data[c]) for c in candidates]
+    np.testing.assert_allclose(single, expected, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(four, expected, rtol=1e-5, atol=1e-7)

@@ -8,7 +8,11 @@ from sklearn.metrics import adjusted_rand_score
 
 from .common_nndescent import flagged_heap_push, make_heap
 from .knn_graph import knn_graph, nn_descent
-from .search.kernels import distance_to, output_to_internal
+from .search.kernels import (
+    four_internal_distances_to,
+    internal_distance_to,
+    output_to_internal,
+)
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -54,40 +58,105 @@ def _remap_rows(indices, distances, old_to_new):
     )
 
 
-@numba.njit(parallel=True, fastmath=True, cache=True)
-def _offer_two_hop(heap_indices, heap_distances, heap_flags, rows, affected, data, inv_norms):
-    """Offer each affected row its neighbours' neighbours.
+# How rows that lose neighbours are repaired, per input dtype, as
+# (n_first, n_second, n_reflag): each such row is offered the first n_second
+# neighbours of its first n_first surviving neighbours, and its n_reflag
+# nearest edges are flagged as new so that NN-descent re-explores around it
+# (otherwise NN-descent never revisits a row's surviving edges). For float and
+# int8 data a small repair plus re-flagging measured faster, and more
+# accurate, than offering all neighbours of neighbours; bit-packed distances
+# are cheap enough that the full repair without re-flagging is fastest.
+REPAIR_SETTINGS = {
+    np.dtype(np.float32): (5, 5, 5),
+    np.dtype(np.int8): (5, 5, 5),
+    np.dtype(np.uint8): (14, 14, 0),
+}
 
-    ``rows`` are the (renumbered) neighbour rows; candidates go into the
-    affected row's own heap only, so rows can be processed in parallel.
-    Distances are converted to internal units; candidates with no similarity
-    at all are skipped.
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def _repair_rows(
+    heap_indices, heap_distances, heap_flags, rows, affected, data, inv_norms,
+    n_first, n_second, n_reflag,
+):
+    """Offer each affected row a few of its neighbours' neighbours, then flag
+    its ``n_reflag`` nearest edges as new.
+
+    Candidates are the first ``n_second`` neighbours of the row's first
+    ``n_first`` surviving neighbours (``rows`` are the renumbered neighbour
+    rows), skipping the row itself, current heap entries and repeats.
+    Distances are computed in internal units, four at a time where possible,
+    and go into the affected row's own heap only, so rows can be processed in
+    parallel. Candidates with no similarity at all are skipped.
     """
     k = rows.shape[1]
+    heap_size = heap_indices.shape[1]
+    n_second = min(n_second, k)
     for r in numba.prange(affected.shape[0]):
         a = affected[r]
         if inv_norms.shape[0] > 0:
             inv_a = inv_norms[a]
         else:
             inv_a = np.float32(1.0)
+        candidates = np.empty(n_first * n_second, dtype=np.int32)
+        n_candidates = 0
+        n_used = 0
         for j in range(k):
             b = rows[a, j]
             if b < 0:
                 continue
-            for t in range(k):
+            n_used += 1
+            if n_used > n_first:
+                break
+            for t in range(n_second):
                 c = rows[b, t]
                 if c < 0 or c == a:
                     continue
-                d = distance_to(data[a], inv_a, data, inv_norms, c)
-                if not np.isfinite(d):
-                    continue
+                seen = False
+                for m in range(heap_size):
+                    if heap_indices[a, m] == c:
+                        seen = True
+                        break
+                if not seen:
+                    for m in range(n_candidates):
+                        if candidates[m] == c:
+                            seen = True
+                            break
+                if not seen:
+                    candidates[n_candidates] = c
+                    n_candidates += 1
+
+        query = data[a]
+        dists = np.empty(4, dtype=np.float32)
+        q = 0
+        while q + 4 <= n_candidates:
+            four_internal_distances_to(
+                query, inv_a, data, inv_norms, candidates[q : q + 4], dists
+            )
+            for m in range(4):
+                if dists[m] < 0.0:
+                    flagged_heap_push(
+                        heap_distances[a],
+                        heap_indices[a],
+                        heap_flags[a],
+                        dists[m],
+                        candidates[q + m],
+                    )
+            q += 4
+        while q < n_candidates:
+            d = internal_distance_to(query, inv_a, data, inv_norms, candidates[q])
+            if d < 0.0:
                 flagged_heap_push(
-                    heap_distances[a],
-                    heap_indices[a],
-                    heap_flags[a],
-                    np.float32(-np.exp2(-d)),
-                    c,
+                    heap_distances[a], heap_indices[a], heap_flags[a], d, candidates[q]
                 )
+            q += 1
+
+        remaining = heap_distances[a].copy()
+        for _ in range(min(n_reflag, heap_size)):
+            nearest = np.argmin(remaining)
+            if not np.isfinite(remaining[nearest]):
+                break
+            heap_flags[a, nearest] = 1
+            remaining[nearest] = np.inf
 
 
 def _rows_to_heap(indices, internal, flag):
@@ -135,8 +204,8 @@ def update_knn_graph(
 
     keep : boolean array of shape (n_current,) or None
         Which current samples to keep; None keeps all. Rows that lose
-        neighbours are refilled from their neighbours' neighbours before
-        NN-descent.
+        neighbours are offered some of their neighbours' neighbours, and their
+        nearest edges are flagged as new, before NN-descent.
 
     inv_norms : array or None
         Inverse row norms of int8 data (current then new); computed if None.
@@ -186,15 +255,23 @@ def update_knn_graph(
         heap[part][n_old:] = new_heap[part]
 
     if affected.shape[0] > 0:
-        # Rows that lost neighbours: offer their neighbours' neighbours
+        # Rows that lost neighbours: offer some neighbours' neighbours, and
+        # flag their nearest edges as new for NN-descent
         if input_dtype == np.int8 and inv_norms is None:
             from .int8_nndescent import int8_inverse_norms
 
             inv_norms = int8_inverse_norms(data_all)
         elif inv_norms is None:
             inv_norms = np.zeros(0, dtype=np.float32)
-        _offer_two_hop(
-            heap[0], heap[1], heap[2], old_rows, affected, data_all, inv_norms
+        _repair_rows(
+            heap[0],
+            heap[1],
+            heap[2],
+            old_rows,
+            affected,
+            data_all,
+            inv_norms,
+            *REPAIR_SETTINGS[np.dtype(data_all.dtype)],
         )
 
     # Offer each new point to the old points it found; accepted edges are

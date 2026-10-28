@@ -298,3 +298,105 @@ def prepare_data(data):
         data = np.array(data, dtype=np.float32, order="C", copy=True)
         data /= norms[:, np.newaxis]
     return data, np.zeros(0, dtype=np.float32)
+
+
+# ------------------------------------------------------- internal-unit kernels
+# Distances in the internal (NN-descent) units of each dtype, for code that
+# pushes into NN-descent heaps: negated cosine similarity for float and int8
+# data (-EXP_NEG_INF when not positive, as fast_cosine), negated Jaccard
+# similarity for bit-packed data (0 when there is no overlap).
+def internal_distance_to(query, query_inv_norm, data, inv_norms, candidate):
+    """Internal-unit distance from ``query`` to ``data[candidate]``."""
+    raise NotImplementedError("internal_distance_to is only available in numba code")
+
+
+@overload(internal_distance_to, jit_options={"fastmath": True})
+def _ov_internal_distance_to(query, query_inv_norm, data, inv_norms, candidate):
+    if data.dtype == numba.types.uint8:
+        from ..uint8_nndescent import fast_bit_jaccard
+
+        def impl(query, query_inv_norm, data, inv_norms, candidate):
+            return fast_bit_jaccard(query, data[candidate])
+
+    elif data.dtype == numba.types.int8:
+        from ..int8_nndescent import fast_int_cosine_dissimilarity
+
+        def impl(query, query_inv_norm, data, inv_norms, candidate):
+            return fast_int_cosine_dissimilarity(
+                query, data[candidate], query_inv_norm, inv_norms[candidate]
+            )
+
+    else:
+        from ..float_nndescent import fast_cosine
+
+        def impl(query, query_inv_norm, data, inv_norms, candidate):
+            return fast_cosine(query, data[candidate])
+
+    return impl
+
+
+def four_internal_distances_to(query, query_inv_norm, data, inv_norms, candidates, out):
+    """Internal-unit distances from ``query`` to the four rows ``data[candidates]``."""
+    raise NotImplementedError(
+        "four_internal_distances_to is only available in numba code"
+    )
+
+
+@numba.njit(fastmath=True, inline="always", cache=True)
+def _negated_similarity(s):
+    if s > 0.0:
+        return np.float32(-s)
+    return -EXP_NEG_INF
+
+
+@overload(four_internal_distances_to, jit_options={"fastmath": True})
+def _ov_four_internal_distances_to(query, query_inv_norm, data, inv_norms, candidates, out):
+    if data.dtype == numba.types.uint8:
+        from ..uint8_nndescent import fast_bit_jaccard
+
+        # Batching popcounts was measured slower than four single comparisons
+        def impl(query, query_inv_norm, data, inv_norms, candidates, out):
+            out[0] = fast_bit_jaccard(query, data[candidates[0]])
+            out[1] = fast_bit_jaccard(query, data[candidates[1]])
+            out[2] = fast_bit_jaccard(query, data[candidates[2]])
+            out[3] = fast_bit_jaccard(query, data[candidates[3]])
+
+    elif data.dtype == numba.types.int8:
+
+        def impl(query, query_inv_norm, data, inv_norms, candidates, out):
+            s0, s1, s2, s3 = _four_dots_int8(
+                query,
+                data[candidates[0]],
+                data[candidates[1]],
+                data[candidates[2]],
+                data[candidates[3]],
+            )
+            out[0] = _negated_similarity(
+                np.float32(s0) * query_inv_norm * inv_norms[candidates[0]]
+            )
+            out[1] = _negated_similarity(
+                np.float32(s1) * query_inv_norm * inv_norms[candidates[1]]
+            )
+            out[2] = _negated_similarity(
+                np.float32(s2) * query_inv_norm * inv_norms[candidates[2]]
+            )
+            out[3] = _negated_similarity(
+                np.float32(s3) * query_inv_norm * inv_norms[candidates[3]]
+            )
+
+    else:
+
+        def impl(query, query_inv_norm, data, inv_norms, candidates, out):
+            s0, s1, s2, s3 = _four_dots_float(
+                query,
+                data[candidates[0]],
+                data[candidates[1]],
+                data[candidates[2]],
+                data[candidates[3]],
+            )
+            out[0] = _negated_similarity(s0)
+            out[1] = _negated_similarity(s1)
+            out[2] = _negated_similarity(s2)
+            out[3] = _negated_similarity(s3)
+
+    return impl
