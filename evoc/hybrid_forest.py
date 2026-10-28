@@ -623,6 +623,9 @@ def make_hybrid_leaf_array(
     """
     sparse = hasattr(data, "indptr")
     if sparse:
+        if not data.has_canonical_format:
+            data = data.copy()
+            data.sum_duplicates()
         inds = data.indices
         indptr = data.indptr
         values = data.data
