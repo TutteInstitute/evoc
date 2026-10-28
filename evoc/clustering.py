@@ -729,6 +729,11 @@ class EVoC(BaseEstimator, ClusterMixin):
     duplicates_ : set of tuple of int
         A set of pairs of indices of potential duplicate points in the data.
 
+    sample_ids_ : array of shape (n_samples,)
+        A stable integer id for each sample: fitting numbers the samples from 0,
+        and :meth:`update` gives new samples the next ids and drops the ids of
+        expired samples, so ids identify samples across updates.
+
     prediction_data_ : PredictionData
         Only if ``prediction_data=True``: the prepared training data, k-NN
         bandwidths, node embedding (``prediction_data_.embedding``), condensed
@@ -840,6 +845,9 @@ class EVoC(BaseEstimator, ClusterMixin):
         elif hasattr(self, "prediction_data_"):
             del self.prediction_data_
 
+        self.sample_ids_ = np.arange(X.shape[0])
+        self._next_sample_id = X.shape[0]
+        self._layer_max_labels = [int(l.max()) for l in self.cluster_layers_]
         self._select_labels()
         return self.labels_
 
@@ -1231,8 +1239,9 @@ class EVoC(BaseEstimator, ClusterMixin):
     # ---------------------------------------------------------------- update
     def update(
         self,
-        X_new,
+        X_new=None,
         *,
+        X_expired=None,
         recluster=True,
         relabel=True,
         optimize="new",
@@ -1242,83 +1251,87 @@ class EVoC(BaseEstimator, ClusterMixin):
         refresh_index=True,
         random_state=None,
     ):
-        """Add samples to a fitted model without refitting from scratch.
+        """Add new samples to, and/or expire old samples from, a fitted model.
 
-        Requires a model fitted with ``prediction_data=True``. The k-NN graph
-        is extended incrementally and the fuzzy graph rebuilt. New samples are
-        placed in the node embedding at the mean of their neighbours'
-        positions, weighted by fuzzy graph edge weights. Then, by default,
-        the embedding is re-clustered and each new layer is relabelled to
-        agree with the corresponding old layer, so that cluster ids stay
-        stable.
+        This updates the model without refitting from scratch, which makes it
+        possible to keep a clustering of a moving window of data up to date:
+        expire the oldest samples and add the newest ones. Requires a model
+        fitted with ``prediction_data=True``.
+
+        Expired samples are removed first and new samples are then appended,
+        so afterwards the samples are the remaining ones, in their previous
+        order, followed by ``X_new``. The k-NN graph is updated incrementally,
+        new samples are placed in the node embedding near their neighbours,
+        and the embedding is re-clustered. Each new cluster layer is matched to
+        the old layer with the most similar number of clusters and relabelled
+        so that clusters keep their ids. Use ``sample_ids_`` to keep track of
+        which sample is which across updates.
 
         Parameters
         ----------
-        X_new : array-like of shape (n_new, n_features)
-            New samples, of the same kind and number of features as the
-            training data. They are appended after the existing samples.
+        X_new : array-like of shape (n_new, n_features) or None, default=None
+            New samples, of the same kind (float, int8 or uint8) and number of
+            features as the training data.
+
+        X_expired : array-like or None, default=None
+            The samples to remove. Either a 1-D array of row positions or a
+            boolean mask over the current samples, or a 2-D array of samples
+            to match against the current ones (each removes the oldest matching
+            sample). To expire samples by id, pass
+            ``np.isin(model.sample_ids_, ids)``. Requires ``recluster=True``.
 
         recluster : bool, default=True
-            Re-cluster the updated embedding. If False, the existing labels are
-            kept and the new samples are assigned with
-            ``predict(method="embedding")`` (the condensed trees then still
-            describe the original samples).
+            Whether to re-cluster after updating. If False, existing labels
+            are kept and new samples are assigned to the existing clusters as
+            ``predict(method="embedding")`` would assign them.
 
         relabel : bool, default=True
-            Relabel re-clustered layers to keep cluster ids stable: each new
-            layer is matched to the old layer with the most similar number of
-            clusters, and its clusters to that layer's clusters by maximum
-            overlap on the existing samples. Clusters with no counterpart get
-            new ids above every existing id, so labels need not be contiguous.
-            The old layer each layer was matched to is recorded in
-            ``update_layer_matches_``. If False, layers are labelled as a fresh
-            fit would label them.
+            Whether to relabel the new cluster layers to match the old ones, so
+            that clusters keep their ids. Clusters that have no counterpart get
+            new ids, and ids of clusters that disappear are not reused, so labels
+            need not be contiguous. The old layer each new layer was matched to
+            is recorded in ``update_layer_matches_``. If False, layers are
+            labelled as a fresh fit would label them.
 
         optimize : {"new", "all"}, default="new"
-            Which embedding positions may move when re-clustering. With "new"
-            existing samples keep their positions and only the new samples'
-            positions are (optionally, see ``n_epochs``) optimised with the
-            node embedding's gradients. "all" re-optimises every position,
-            starting from the current embedding, which lets the embedding
-            adapt to the new samples but moves existing samples. On MNIST
-            (adding 10k samples to 60k) "new" kept the existing samples'
-            labels (ARI 0.99 with the previous ``labels_``) better than "all"
-            (0.96) or a refit (0.93), with similar agreement with the digit
-            labels (ARI 0.89, 0.90 and 0.90).
+            Which node embedding positions may change. "new" keeps the positions
+            of existing samples, which keeps their clustering most stable. "all"
+            re-optimises every position starting from the current embedding,
+            which lets the embedding adapt to the new samples at the cost of
+            moving the existing ones.
 
         n_epochs : int or None, default=None
-            Epochs of embedding optimisation. For ``optimize="new"`` the
-            default is 0: new samples stay at the weighted mean of their
-            neighbours, which gave the most stable and accurate clusterings in
-            our measurements (optimising only the new samples against a fixed
-            embedding made results depend strongly on the random negative
-            samples). For ``optimize="all"`` the default is
-            ``max(10, round(0.4 * n_epochs))`` of the fitted ``n_epochs``.
+            The number of epochs of node embedding optimisation. With
+            ``optimize="new"`` the default is 0, which places new samples at the
+            weighted mean of their neighbours' positions; this proved more
+            stable than optimising only the new samples. With ``optimize="all"``
+            the default is ``max(10, round(0.4 * n_epochs))``.
 
         initial_alpha : float or None, default=None
-            Initial learning rate; defaults to 0.1 (as in fitting) for
-            ``optimize="new"`` and 0.01 for ``optimize="all"``, where lower
-            values move existing samples less.
+            The initial learning rate for the optimisation; defaults to 0.1 for
+            ``optimize="new"`` and 0.01 for ``optimize="all"``. Lower values move
+            existing samples less.
 
         epsilon : float, default=0.2
-            Accuracy/speed trade-off of the search for the new samples'
+            Controls the accuracy/speed trade-off of the search for new samples'
             neighbours.
 
         refresh_index : bool, default=True
-            Rebuild the search index for later predict/update calls now rather
-            than on first use.
+            Whether to rebuild the nearest neighbour search index now, rather
+            than on the next call that needs it.
 
         random_state : int, RandomState instance or None, default=None
-            Randomness for this update; defaults to the model's
+            The random state for this update; defaults to the model's
             ``random_state``.
 
         Returns
         -------
         labels : array of shape (n_new,)
-            Labels of the new samples in the ``labels_`` layer.
+            The labels of the new samples in the ``labels_`` layer.
         """
         from .update import (
             match_layers,
+            resolve_expired,
             stable_relabel,
             update_knn_graph,
             warm_start_positions,
@@ -1331,16 +1344,50 @@ class EVoC(BaseEstimator, ClusterMixin):
             self.random_state if random_state is None else random_state
         )
         k = params["n_neighbors"]
-        n_old = pdata.data.shape[0]
+        n_current = pdata.data.shape[0]
         if optimize not in ("new", "all"):
             raise ValueError(f"optimize should be 'new' or 'all', not {optimize!r}")
         if initial_alpha is None:
             initial_alpha = 0.1 if optimize == "new" else 0.01
 
+        has_new = X_new is not None and np.asarray(X_new).size > 0
+        has_expired = X_expired is not None and np.asarray(X_expired).size > 0
+        if not has_new and not has_expired:
+            raise ValueError("update needs X_new, X_expired or both")
+        if has_expired and not recluster:
+            raise ValueError(
+                "Expiring samples requires re-clustering; use recluster=True"
+            )
+
         index = self._get_search_index()
-        q_inds, q_dists = index.query(X_new, min(k - 1, n_old), epsilon=epsilon)
-        new_data, new_inv_norms = prepare_data(np.asarray(X_new))
+        if has_expired:
+            keep = resolve_expired(X_expired, pdata.data, index)
+        else:
+            keep = np.ones(n_current, dtype=bool)
+        n_old = int(keep.sum())
+        n_expired = n_current - n_old
+        if n_old + (np.shape(X_new)[0] if has_new else 0) <= k:
+            raise ValueError(
+                f"An update must leave more than n_neighbors={k} samples"
+            )
+
+        if has_new:
+            # Ask for extra neighbours when some of them may have expired
+            n_query = min(k - 1 + min(n_expired, k - 1), n_current)
+            q_inds, q_dists = index.query(X_new, n_query, epsilon=epsilon)
+            new_data, new_inv_norms = prepare_data(np.asarray(X_new))
+        else:
+            n_features = pdata.data.shape[1]
+            new_data = np.zeros((0, n_features), dtype=pdata.data.dtype)
+            new_inv_norms = np.zeros(0, dtype=np.float32)
+            q_inds = np.zeros((0, k - 1), dtype=np.int32)
+            q_dists = np.zeros((0, k - 1), dtype=np.float32)
         n_new = new_data.shape[0]
+        inv_norms = (
+            np.concatenate([pdata.inv_norms[keep], new_inv_norms])
+            if pdata.inv_norms.shape[0]
+            else pdata.inv_norms
+        )
         data_all, nn_inds, nn_dists = update_knn_graph(
             pdata.data,
             new_data,
@@ -1350,11 +1397,8 @@ class EVoC(BaseEstimator, ClusterMixin):
             q_dists,
             pdata.input_dtype,
             rng,
-        )
-        inv_norms = (
-            np.concatenate([pdata.inv_norms, new_inv_norms])
-            if pdata.inv_norms.shape[0]
-            else pdata.inv_norms
+            keep=keep,
+            inv_norms=inv_norms if inv_norms.shape[0] else None,
         )
         graph, sigmas, rhos = neighbor_graph_matrix(
             params["neighbor_scale"] * k,
@@ -1370,7 +1414,7 @@ class EVoC(BaseEstimator, ClusterMixin):
             rhos[n_old:],
         )
         initial = warm_start_positions(
-            pdata.embedding,
+            np.ascontiguousarray(pdata.embedding[keep]),
             np.ascontiguousarray(nn_inds[n_old:, 1:]),
             new_weights,
             n_old,
@@ -1379,6 +1423,9 @@ class EVoC(BaseEstimator, ClusterMixin):
 
         old_layers = self.cluster_layers_
         old_strengths = self.membership_strength_layers_
+        max_labels = getattr(
+            self, "_layer_max_labels", [int(l.max()) for l in old_layers]
+        )
         if recluster:
             if optimize == "new":
                 # Only the new samples move; existing positions are kept
@@ -1425,13 +1472,26 @@ class EVoC(BaseEstimator, ClusterMixin):
                 )
             )
             if relabel:
-                matches = match_layers(old_layers, layers, n_old)
+                kept_layers = [l[keep] for l in old_layers]
+                matches = match_layers(kept_layers, layers, n_old)
                 layer_labels = []
+                new_max_labels = []
                 for i, match in enumerate(matches):
-                    layers[i], mapping = stable_relabel(old_layers[match], layers[i])
+                    layers[i], mapping = stable_relabel(
+                        kept_layers[match],
+                        layers[i],
+                        min_new_label=max_labels[match] + 1,
+                    )
                     layer_labels.append(mapping)
+                    new_max_labels.append(
+                        max(max_labels[match], int(layers[i].max()))
+                    )
                 hierarchy = hierarchy._replace(layer_labels=layer_labels)
-            self.update_layer_matches_ = matches if relabel else None
+                max_labels = new_max_labels
+                self.update_layer_matches_ = matches
+            else:
+                max_labels = [int(l.max()) for l in layers]
+                self.update_layer_matches_ = None
         else:
             # Keep the existing samples' positions and labels; place the new
             # samples by refining their positions against the fixed embedding
@@ -1466,8 +1526,16 @@ class EVoC(BaseEstimator, ClusterMixin):
             persistence = self.persistence_scores_
             hierarchy = pdata.hierarchy
             core_distances = pdata.core_distances
+            max_labels = [max(m, int(l.max())) for m, l in zip(max_labels, layers)]
             self.update_layer_matches_ = None
 
+        sample_ids = getattr(self, "sample_ids_", np.arange(n_current))
+        next_id = getattr(self, "_next_sample_id", n_current)
+        self.sample_ids_ = np.concatenate(
+            [sample_ids[keep], np.arange(next_id, next_id + n_new)]
+        )
+        self._next_sample_id = next_id + n_new
+        self._layer_max_labels = max_labels
         self.nn_inds_ = nn_inds
         self.nn_dists_ = nn_dists
         self.duplicates_ = find_duplicates(nn_inds, nn_dists)
@@ -1489,4 +1557,3 @@ class EVoC(BaseEstimator, ClusterMixin):
         if refresh_index:
             self._get_search_index()
         return self.labels_[n_old:]
-

@@ -248,3 +248,149 @@ def test_update_optimize_options(update_case):
     assert not np.array_equal(
         model.prediction_data_.embedding[:N_FIT], update_case["old_embedding"]
     )
+
+
+# --------------------------------------------------------------- expiring data
+N_WINDOW = 2500
+STEP = 500
+
+
+@pytest.fixture(scope="module", params=["float", "uint8", "int8"])
+def window_case(request):
+    X, y = _data(request.param, n=N_WINDOW + 3 * STEP, seed=3)
+    model = EVoC(random_state=0, prediction_data=True).fit(X[:N_WINDOW])
+    return dict(X=X, y=y, blob=pickle.dumps(model), dtype=request.param)
+
+
+def test_fit_sets_sample_ids(window_case):
+    model = pickle.loads(window_case["blob"])
+    np.testing.assert_array_equal(model.sample_ids_, np.arange(N_WINDOW))
+
+
+def test_expire_forms_are_equivalent(window_case):
+    X = window_case["X"]
+    expired = np.arange(STEP)
+    results = []
+    for X_expired in (
+        expired,
+        np.isin(np.arange(N_WINDOW), expired),
+        X[expired],
+    ):
+        model = pickle.loads(window_case["blob"])
+        new_labels = model.update(X[N_WINDOW : N_WINDOW + STEP], X_expired=X_expired)
+        results.append(model)
+        assert new_labels.shape == (STEP,)
+        np.testing.assert_array_equal(
+            model.sample_ids_, np.arange(STEP, N_WINDOW + STEP)
+        )
+    for model in results[1:]:
+        np.testing.assert_array_equal(model.nn_inds_, results[0].nn_inds_)
+        np.testing.assert_array_equal(model.labels_, results[0].labels_)
+
+
+def test_expire_graph_and_state(window_case):
+    X = window_case["X"]
+    model = pickle.loads(window_case["blob"])
+    model.update(X[N_WINDOW : N_WINDOW + STEP], X_expired=np.arange(STEP))
+    window = X[STEP : N_WINDOW + STEP]
+    n = window.shape[0]
+    assert model.nn_inds_.shape == (n, K)
+    np.testing.assert_array_equal(model.nn_inds_[:, 0], np.arange(n))
+    assert np.all((model.nn_inds_ >= 0) & (model.nn_inds_ < n))
+    for row in model.nn_inds_[::13]:
+        assert len(np.unique(row)) == K
+    pdata = model.prediction_data_
+    data, inv = prepare_data(window)
+    np.testing.assert_allclose(pdata.data, data, atol=1e-6)
+    assert pdata.embedding.shape[0] == n and pdata.hierarchy.n_samples == n
+    for labels in model.cluster_layers_:
+        assert labels.shape == (n,)
+    # k-NN recall is as good as building the window's graph from scratch
+    _, scratch_dists = knn_graph(window, n_neighbors=K, random_state=0)
+    rows = np.arange(0, n, 7)
+    updated = _tie_aware_recall(model.nn_dists_, data, inv, rows)
+    scratch = _tie_aware_recall(scratch_dists, data, inv, rows)
+    assert updated >= scratch - 0.005
+    # Prediction state is consistent with the new samples
+    assert model.predict(X[-20:]).shape == (20,)
+    assert model.predict(X[-20:], method="embedding").shape == (20,)
+    restored = pickle.loads(pickle.dumps(model))
+    np.testing.assert_array_equal(restored.sample_ids_, model.sample_ids_)
+
+
+def test_moving_window(window_case):
+    X, y = window_case["X"], window_case["y"]
+    model = pickle.loads(window_case["blob"])
+    seen_max = list(model._layer_max_labels)
+    for step in range(3):
+        start, stop = (step + 1) * STEP, N_WINDOW + (step + 1) * STEP
+        before = [l.copy() for l in model.cluster_layers_]
+        model.update(X[stop - STEP : stop], X_expired=np.arange(STEP))
+        np.testing.assert_array_equal(model.sample_ids_, np.arange(start, stop))
+        window_labels = y[start:stop]
+        labels = model.labels_
+        clustered = labels >= 0
+        assert adjusted_rand_score(window_labels[clustered], labels[clustered]) >= 0.9
+        # Labels that were not in the matched old layer are fresh ids, above
+        # every id that layer has ever used
+        for layer, match in zip(model.cluster_layers_, model.update_layer_matches_):
+            fresh = np.setdiff1d(np.unique(layer[layer >= 0]), np.unique(before[match]))
+            assert np.all(fresh > seen_max[match])
+        seen_max = list(model._layer_max_labels)
+
+
+def test_expire_only(window_case):
+    X = window_case["X"]
+    model = pickle.loads(window_case["blob"])
+    new_labels = model.update(X_expired=np.arange(STEP))
+    assert new_labels.shape == (0,)
+    assert model.labels_.shape == (N_WINDOW - STEP,)
+    np.testing.assert_array_equal(model.sample_ids_, np.arange(STEP, N_WINDOW))
+    model = pickle.loads(window_case["blob"])
+    model.update(None, X_expired=np.arange(N_WINDOW) >= N_WINDOW - STEP)
+    np.testing.assert_array_equal(model.sample_ids_, np.arange(N_WINDOW - STEP))
+
+
+def test_expire_errors(window_case):
+    X = window_case["X"]
+    model = pickle.loads(window_case["blob"])
+    new = X[N_WINDOW : N_WINDOW + STEP]
+    with pytest.raises(ValueError, match="recluster"):
+        model.update(new, X_expired=np.arange(10), recluster=False)
+    with pytest.raises(ValueError, match="X_new, X_expired"):
+        model.update()
+    with pytest.raises(ValueError, match="row positions"):
+        model.update(new, X_expired=np.array([0, N_WINDOW]))
+    with pytest.raises(ValueError, match="repeat"):
+        model.update(new, X_expired=np.array([3, 3]))
+    with pytest.raises(ValueError, match="mask"):
+        model.update(new, X_expired=np.ones(10, dtype=bool))
+    with pytest.raises(ValueError, match="does not match"):
+        model.update(new, X_expired=X[-1:])
+    with pytest.raises(ValueError):
+        model.update(new, X_expired=X[:5, :-1])
+    with pytest.raises(ValueError, match="n_neighbors"):
+        model.update(X_expired=np.arange(N_WINDOW - 5))
+    # A failed update leaves the model unchanged
+    np.testing.assert_array_equal(model.sample_ids_, np.arange(N_WINDOW))
+
+
+def test_expire_duplicate_rows_oldest_first():
+    X, _ = _data("float", n=2000, seed=3)
+    X = np.vstack([X, X[10:11], X[10:11]])
+    model = EVoC(random_state=0, prediction_data=True).fit(X)
+    n = X.shape[0]
+    model.update(X_expired=X[10:11])
+    assert 10 not in model.sample_ids_
+    assert n - 2 in model.sample_ids_ and n - 1 in model.sample_ids_
+    model.update(X_expired=X[10:12])
+    assert n - 2 not in model.sample_ids_ and n - 1 in model.sample_ids_
+
+
+def test_expire_whole_cluster(window_case):
+    X, y = window_case["X"], window_case["y"]
+    model = pickle.loads(window_case["blob"])
+    gone = y[:N_WINDOW] == 0
+    model.update(X[N_WINDOW:][y[N_WINDOW:] != 0][:STEP], X_expired=gone)
+    assert model.labels_.shape == (N_WINDOW - gone.sum() + STEP,)
+    assert np.all(model.nn_inds_ < model.labels_.shape[0])
