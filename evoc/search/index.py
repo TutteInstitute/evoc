@@ -18,6 +18,7 @@ from .search_graph import build_search_graph, permute_graph, permute_rows
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
+PARALLEL_MIN_QUERIES = 256
 
 
 def _input_kind(dtype):
@@ -69,8 +70,10 @@ class SearchIndex:
     random_state : int, RandomState instance or None, default=None
         Seeds the search tree and the search's random initialisation.
 
-    parallel_batch_queries : bool, default=False
-        Search batches of queries in parallel.
+    parallel_batch_queries : bool or None, default=None
+        Search batches of queries in parallel. None searches batches of at
+        least ``PARALLEL_MIN_QUERIES`` queries in parallel (when numba has more
+        than one thread) and smaller batches serially.
 
     Attributes
     ----------
@@ -90,7 +93,7 @@ class SearchIndex:
         leaf_size=30,
         max_depth=200,
         random_state=None,
-        parallel_batch_queries=False,
+        parallel_batch_queries=None,
     ):
         self.input_dtype = _input_kind(data.dtype)
         nn_inds = np.asarray(nn_inds)
@@ -188,16 +191,25 @@ class SearchIndex:
             self.n_neighbors,
             self.min_distance,
         )
-        query_dtype = self._data.dtype
-        tree_query_dtype = np.uint8 if self.input_dtype == np.uint8 else np.float32
-        self._search = make_cached_search_function(
-            self._struct, query_dtype, tree_query_dtype, self.parallel_batch_queries
-        )
-        self._deheap = (
-            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
-        )
+        self._searches = {}
         # Make sure everything is compiled (or loaded from cache) up front
-        self.query(self._original_rows(1), 1)
+        self.query(self._original_rows(1), 1, parallel=False)
+        if self.parallel_batch_queries is not False:
+            self.query(self._original_rows(1), 1, parallel=True)
+
+    def _get_search(self, parallel):
+        if parallel not in self._searches:
+            query_dtype = self._data.dtype
+            tree_query_dtype = (
+                np.uint8 if self.input_dtype == np.uint8 else np.float32
+            )
+            self._searches[parallel] = (
+                make_cached_search_function(
+                    self._struct, query_dtype, tree_query_dtype, parallel
+                ),
+                deheap_sort_parallel if parallel else deheap_sort_serial,
+            )
+        return self._searches[parallel]
 
     def _original_rows(self, n):
         rows = self._data[:n]
@@ -245,7 +257,7 @@ class SearchIndex:
         X /= norms[:, None]
         return X, X, empty, zero_rows
 
-    def query(self, X, k, epsilon=0.1):
+    def query(self, X, k, epsilon=0.1, parallel=None):
         """Find the k nearest training samples to each query.
 
         Parameters
@@ -260,6 +272,10 @@ class SearchIndex:
         epsilon : float, default=0.1
             Controls the accuracy/speed trade-off of the graph search; larger
             values search more of the graph.
+
+        parallel : bool or None, default=None
+            Search the queries in parallel; None follows
+            ``parallel_batch_queries``.
 
         Returns
         -------
@@ -279,8 +295,16 @@ class SearchIndex:
                 f"({self.n_samples})"
             )
         queries, tree_queries, inv_norms, zero_rows = self._prepare_queries(X)
+        if parallel is None:
+            parallel = self.parallel_batch_queries
+            if parallel is None:
+                parallel = (
+                    queries.shape[0] >= PARALLEL_MIN_QUERIES
+                    and numba.get_num_threads() > 1
+                )
+        search, deheap = self._get_search(bool(parallel))
         result = make_heap(queries.shape[0], k)
-        self._search(
+        search(
             queries,
             tree_queries,
             inv_norms,
@@ -290,7 +314,7 @@ class SearchIndex:
             self._visited,
             self._rng_state,
         )
-        indices, distances = self._deheap(result[0], result[1])
+        indices, distances = deheap(result[0], result[1])
         found = indices >= 0
         indices[found] = self.order[indices[found]]
         if zero_rows is not None and np.any(zero_rows):
@@ -300,7 +324,7 @@ class SearchIndex:
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        for key in ("_struct", "_search", "_deheap", "_visited"):
+        for key in ("_struct", "_searches", "_visited"):
             state.pop(key, None)
         return state
 

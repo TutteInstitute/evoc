@@ -933,6 +933,7 @@ def nn_descent_uint8(
     delta_improv=None,
     leaf_array=None,
     verbose=False,
+    init_graph=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using uint8 data.
@@ -952,13 +953,20 @@ def nn_descent_uint8(
         (disabled).
     - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
     - verbose: Whether to print progress information. Default is False.
+    - init_graph: Optional (indices, distances, flags) heap to start from, as
+        made by make_heap, in internal distance units and without self
+        neighbours. It is updated in place. Rows that are not full are topped up
+        with random neighbours; no RP-tree initialisation is done.
 
     Returns:
     - The sorted nearest neighbor graph.
     """
     n_threads = numba.get_num_threads()
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
+    if init_graph is None:
+        current_graph = make_heap(data.shape[0], n_neighbors)
+        init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
+    else:
+        current_graph = init_graph
     init_random_uint8(n_neighbors, data, current_graph, rng_state)
 
     n_vertices = data.shape[0]
@@ -1076,6 +1084,7 @@ def nn_descent_uint8_sorted(
     delta_improv=None,
     leaf_array=None,
     verbose=False,
+    init_graph=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using uint8 data.
@@ -1098,13 +1107,20 @@ def nn_descent_uint8_sorted(
         (disabled).
     - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
     - verbose: Whether to print progress information. Default is False.
+    - init_graph: Optional (indices, distances, flags) heap to start from, as
+        made by make_heap, in internal distance units and without self
+        neighbours. It is updated in place. Rows that are not full are topped up
+        with random neighbours; no RP-tree initialisation is done.
 
     Returns:
     - The sorted nearest neighbor graph.
     """
     n_threads = numba.get_num_threads()
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
+    if init_graph is None:
+        current_graph = make_heap(data.shape[0], n_neighbors)
+        init_rp_tree_uint8(data, current_graph, leaf_array, n_threads)
+    else:
+        current_graph = init_graph
     init_random_uint8(n_neighbors, data, current_graph, rng_state)
 
     n_vertices = data.shape[0]

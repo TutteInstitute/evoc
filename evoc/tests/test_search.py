@@ -161,7 +161,7 @@ def test_self_search_recall(fitted):
 
 def test_held_out_recall(fitted):
     dtype, train, test, _, _, index = fitted
-    inds, dists = index.query(test, 10, epsilon=0.1)
+    inds, dists = index.query(test, 10, epsilon=0.1, parallel=False)
     true_inds, true_dists = _brute_force(train, test, 10)
     # Count found neighbours at least as close as the true 10th (ties are common
     # for bit-packed and quantised data)

@@ -891,6 +891,7 @@ def nn_descent_int8(
     leaf_array=None,
     verbose=False,
     inv_norms=None,
+    init_graph=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using int8 data.
@@ -912,6 +913,10 @@ def nn_descent_int8(
     - verbose: Whether to print progress information. Default is False.
     - inv_norms: Inverse L2 norms of the rows of data (float32). Computed from the
         data if None. Distances are negated cosine similarities.
+    - init_graph: Optional (indices, distances, flags) heap to start from, as
+        made by make_heap, in internal distance units and without self
+        neighbours. It is updated in place. Rows that are not full are topped up
+        with random neighbours; no RP-tree initialisation is done.
 
     Returns:
     - The sorted nearest neighbor graph.
@@ -919,8 +924,11 @@ def nn_descent_int8(
     if inv_norms is None:
         inv_norms = int8_inverse_norms(data)
     n_threads = numba.get_num_threads()
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    if init_graph is None:
+        current_graph = make_heap(data.shape[0], n_neighbors)
+        init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    else:
+        current_graph = init_graph
     init_random_int8(n_neighbors, data, inv_norms, current_graph, rng_state)
 
     n_vertices = data.shape[0]
@@ -1040,6 +1048,7 @@ def nn_descent_int8_sorted(
     leaf_array=None,
     verbose=False,
     inv_norms=None,
+    init_graph=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using int8 data.
@@ -1064,6 +1073,10 @@ def nn_descent_int8_sorted(
     - verbose: Whether to print progress information. Default is False.
     - inv_norms: Inverse L2 norms of the rows of data (float32). Computed from the
         data if None. Distances are negated cosine similarities.
+    - init_graph: Optional (indices, distances, flags) heap to start from, as
+        made by make_heap, in internal distance units and without self
+        neighbours. It is updated in place. Rows that are not full are topped up
+        with random neighbours; no RP-tree initialisation is done.
 
     Returns:
     - The sorted nearest neighbor graph.
@@ -1071,8 +1084,11 @@ def nn_descent_int8_sorted(
     if inv_norms is None:
         inv_norms = int8_inverse_norms(data)
     n_threads = numba.get_num_threads()
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    if init_graph is None:
+        current_graph = make_heap(data.shape[0], n_neighbors)
+        init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    else:
+        current_graph = init_graph
     init_random_int8(n_neighbors, data, inv_norms, current_graph, rng_state)
 
     n_vertices = data.shape[0]
