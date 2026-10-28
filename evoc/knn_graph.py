@@ -175,7 +175,9 @@ def nn_descent(
                 leaf_array=leaf_array,
                 verbose=verbose,
             )
-        neighbor_graph[1][:] = 1.0 / (-neighbor_graph[1])
+        # Internal int8 distances are negated cosine similarities, so int8 uses
+        # the same output transform as float data.
+        neighbor_graph[1][:] = np.maximum(-np.log2(-neighbor_graph[1]), 0.0)
     else:
         if use_sorted_updates:
             neighbor_graph = nn_descent_float_sorted(

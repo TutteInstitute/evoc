@@ -20,6 +20,7 @@ EPS = 1e-8
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 INF = np.float32(np.inf)
+EXP_NEG_INF = np.float32(np.finfo(np.float32).tiny)
 
 
 @numba.njit(
@@ -47,6 +48,62 @@ def fast_int_inner_product_dissimilarity(x, y):
         result += np.int32(x[i]) * np.int32(y[i])
 
     return -np.float32(result)
+
+
+@numba.njit(fastmath=True, nogil=True, inline="always", cache=True)
+def int_dot_to_cosine_dissimilarity(dot, inv_nx, inv_ny):
+    """Turn an int32 inner product into the negated cosine similarity, with the
+    same convention as ``fast_cosine`` for non-positive similarities."""
+    s = np.float32(dot) * inv_nx * inv_ny
+    if s > 0.0:
+        return -s
+    else:
+        return -EXP_NEG_INF
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1],f4,f4)",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.float32,
+            numba.types.float32,
+        ),
+    ],
+    fastmath=True,
+    boundscheck=False,
+    nogil=True,
+    locals={
+        "result": numba.types.int32,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def fast_int_cosine_dissimilarity(x, y, inv_nx, inv_ny):
+    """Negated cosine similarity of two int8 vectors, given the inverse L2 norms
+    of each. Non-positive similarities map to ``-EXP_NEG_INF`` as in
+    ``fast_cosine``."""
+    result = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        result += np.int32(x[i]) * np.int32(y[i])
+
+    s = np.float32(result) * inv_nx * inv_ny
+    if s > 0.0:
+        return -s
+    else:
+        return -EXP_NEG_INF
+
+
+def int8_inverse_norms(data):
+    """Inverse L2 norms of the rows of int8 data as float32 (0 for zero rows)."""
+    norms = np.sqrt(np.einsum("ij,ij->i", data, data, dtype=np.int64).astype(np.float64))
+    result = np.zeros(data.shape[0], dtype=np.float32)
+    nonzero = norms > 0
+    result[nonzero] = (1.0 / norms[nonzero]).astype(np.float32)
+    return result
 
 
 @numba.njit(
@@ -381,6 +438,7 @@ def make_int8_forest(data, rng_states, leaf_size=30, max_depth=200):
         numba.types.Array(numba.types.int32, 2, "C", readonly=True),
         numba.float32[:],
         numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         numba.int64,
     ),
     parallel=True,
@@ -397,7 +455,7 @@ def make_int8_forest(data, rng_states, leaf_size=30, max_depth=200):
     cache=True,
 )
 def generate_leaf_updates_int8(
-    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
+    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, inv_norms, n_threads
 ):
 
     block_size = leaf_block.shape[0]
@@ -422,7 +480,9 @@ def generate_leaf_updates_int8(
                     if q < 0:
                         break
 
-                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
+                    d = fast_int_cosine_dissimilarity(
+                        data_p, data[q], inv_norms[p], inv_norms[q]
+                    )
                     if d < dist_thresholds[p] or d < dist_thresholds[q]:
                         if idx < max_updates:
                             updates[t, idx, 0] = int32_bits_as_float32(p)
@@ -439,6 +499,7 @@ def generate_leaf_updates_int8(
     [
         numba.void(
             numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
             numba.types.Tuple(
                 (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
             ),
@@ -459,7 +520,7 @@ def generate_leaf_updates_int8(
     parallel=True,
     cache=True,
 )
-def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
+def init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads):
 
     n_leaves = leaf_array.shape[0]
     block_size = n_threads * 64
@@ -480,7 +541,13 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
         dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_leaf_updates_int8(
-            updates, n_updates_per_thread, leaf_block, dist_thresholds, data, n_threads
+            updates,
+            n_updates_per_thread,
+            leaf_block,
+            dist_thresholds,
+            data,
+            inv_norms,
+            n_threads,
         )
 
         n_vertices = current_graph[0].shape[0]
@@ -521,6 +588,7 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
     numba.types.void(
         numba.int32,
         numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         numba.types.Tuple(
             (numba.int32[:, ::1], numba.float32[:, ::1], numba.uint8[:, ::1])
         ),
@@ -530,14 +598,16 @@ def init_rp_tree_int8(data, current_graph, leaf_array, n_threads):
     locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32},
     cache=True,
 )
-def init_random_int8(n_neighbors, data, heap, rng_state):
+def init_random_int8(n_neighbors, data, inv_norms, heap, rng_state):
     for i in range(data.shape[0]):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 if idx == i or idx in heap[0][i]:
                     continue
-                d = fast_int_inner_product_dissimilarity(data[idx], data[i])
+                d = fast_int_cosine_dissimilarity(
+                    data[idx], data[i], inv_norms[idx], inv_norms[i]
+                )
                 flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx)
 
     return
@@ -551,6 +621,7 @@ def init_random_int8(n_neighbors, data, heap, rng_state):
         numba.int32[:, ::1],
         numba.float32[:],
         numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         numba.int64,
     ),
     locals={
@@ -566,6 +637,7 @@ def generate_graph_update_array_int8(
     old_candidate_block,
     dist_thresholds,
     data,
+    inv_norms,
     n_threads,
 ):
 
@@ -593,7 +665,9 @@ def generate_graph_update_array_int8(
                     if q < 0 or q == p:
                         continue
 
-                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
+                    d = fast_int_cosine_dissimilarity(
+                        data_p, data[q], inv_norms[p], inv_norms[q]
+                    )
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
                         update_array[t, idx, 0] = int32_bits_as_float32(p)
                         update_array[t, idx, 1] = int32_bits_as_float32(q)
@@ -611,7 +685,9 @@ def generate_graph_update_array_int8(
                     if q < 0 or q == p:
                         continue
 
-                    d = fast_int_inner_product_dissimilarity(data_p, data[q])
+                    d = fast_int_cosine_dissimilarity(
+                        data_p, data[q], inv_norms[p], inv_norms[q]
+                    )
                     if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
                         update_array[t, idx, 0] = int32_bits_as_float32(p)
                         update_array[t, idx, 1] = int32_bits_as_float32(q)
@@ -638,11 +714,13 @@ def generate_graph_update_array_int8(
         numba.int32[:, ::1],
         numba.float32[:],
         numba.types.Array(numba.types.int8, 2, "C", readonly=True),
+        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
         numba.int64,
     ),
     locals={
         "data_p": numba.types.Array(numba.types.int8, 1, "C", readonly=True),
         "dist_thresh_p": numba.float32,
+        "inv_norm_p": numba.float32,
         "dist_thresh_q": numba.float32,
         "p": numba.int32,
         "q": numba.int32,
@@ -663,6 +741,7 @@ def generate_sorted_graph_update_array_int8(
     old_candidate_block,
     dist_thresholds,
     data,
+    inv_norms,
     n_threads,
 ):
     """Generate graph updates pre-sorted by target block.
@@ -708,6 +787,7 @@ def generate_sorted_graph_update_array_int8(
                     continue
 
                 data_p = data[p]
+                inv_norm_p = inv_norms[p]
                 dist_thresh_p = dist_thresholds[p]
                 p_block = p // vertex_block_size
                 if p_block >= n_threads:
@@ -744,14 +824,27 @@ def generate_sorted_graph_update_array_int8(
                             s1 += xv * np.int32(y1[dd])
                             s2 += xv * np.int32(y2[dd])
                             s3 += xv * np.int32(y3[dd])
-                        # Same transform as fast_int_inner_product_dissimilarity
-                        partner_dists[0] = -np.float32(s0)
-                        partner_dists[1] = -np.float32(s1)
-                        partner_dists[2] = -np.float32(s2)
-                        partner_dists[3] = -np.float32(s3)
+                        # Same transform as fast_int_cosine_dissimilarity
+                        partner_dists[0] = int_dot_to_cosine_dissimilarity(
+                            s0, inv_norm_p, inv_norms[partners[0]]
+                        )
+                        partner_dists[1] = int_dot_to_cosine_dissimilarity(
+                            s1, inv_norm_p, inv_norms[partners[1]]
+                        )
+                        partner_dists[2] = int_dot_to_cosine_dissimilarity(
+                            s2, inv_norm_p, inv_norms[partners[2]]
+                        )
+                        partner_dists[3] = int_dot_to_cosine_dissimilarity(
+                            s3, inv_norm_p, inv_norms[partners[3]]
+                        )
                     else:
                         for rr in range(n_found):
-                            partner_dists[rr] = fast_int_inner_product_dissimilarity(data_p, data[partners[rr]])
+                            partner_dists[rr] = fast_int_cosine_dissimilarity(
+                                data_p,
+                                data[partners[rr]],
+                                inv_norm_p,
+                                inv_norms[partners[rr]],
+                            )
 
                     for rr in range(n_found):
                         q = partners[rr]
@@ -797,6 +890,7 @@ def nn_descent_int8(
     delta_improv=None,
     leaf_array=None,
     verbose=False,
+    inv_norms=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using int8 data.
@@ -816,14 +910,18 @@ def nn_descent_int8(
         (disabled).
     - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
     - verbose: Whether to print progress information. Default is False.
+    - inv_norms: Inverse L2 norms of the rows of data (float32). Computed from the
+        data if None. Distances are negated cosine similarities.
 
     Returns:
     - The sorted nearest neighbor graph.
     """
+    if inv_norms is None:
+        inv_norms = int8_inverse_norms(data)
     n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_int8(data, current_graph, leaf_array, n_threads)
-    init_random_int8(n_neighbors, data, current_graph, rng_state)
+    init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    init_random_int8(n_neighbors, data, inv_norms, current_graph, rng_state)
 
     n_vertices = data.shape[0]
     n_threads = numba.get_num_threads()
@@ -893,6 +991,7 @@ def nn_descent_int8(
                 old_candidate_block,
                 dist_thresholds,
                 data,
+                inv_norms,
                 n_threads,
             )
 
@@ -940,6 +1039,7 @@ def nn_descent_int8_sorted(
     delta_improv=None,
     leaf_array=None,
     verbose=False,
+    inv_norms=None,
 ):
     """
     Perform approximate nearest neighbor descent algorithm using int8 data.
@@ -962,14 +1062,18 @@ def nn_descent_int8_sorted(
         (disabled).
     - leaf_array: The array representing the leaf structure of the RP-tree. Default is None.
     - verbose: Whether to print progress information. Default is False.
+    - inv_norms: Inverse L2 norms of the rows of data (float32). Computed from the
+        data if None. Distances are negated cosine similarities.
 
     Returns:
     - The sorted nearest neighbor graph.
     """
+    if inv_norms is None:
+        inv_norms = int8_inverse_norms(data)
     n_threads = numba.get_num_threads()
     current_graph = make_heap(data.shape[0], n_neighbors)
-    init_rp_tree_int8(data, current_graph, leaf_array, n_threads)
-    init_random_int8(n_neighbors, data, current_graph, rng_state)
+    init_rp_tree_int8(data, inv_norms, current_graph, leaf_array, n_threads)
+    init_random_int8(n_neighbors, data, inv_norms, current_graph, rng_state)
 
     n_vertices = data.shape[0]
     n_threads = numba.get_num_threads()
@@ -1043,6 +1147,7 @@ def nn_descent_int8_sorted(
                 old_candidate_block,
                 dist_thresholds,
                 data,
+                inv_norms,
                 n_threads,
             )
 

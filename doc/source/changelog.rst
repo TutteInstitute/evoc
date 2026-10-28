@@ -3,6 +3,16 @@ Changelog
 
 This document records all notable changes to EVoC.
 
+Unreleased
+----------
+
+**Changes:**
+
+* int8 data now uses cosine similarity for both neighbour ranking and the
+  reported neighbour distances (``-log2(cosine)``, as for float data).
+  Previously int8 neighbours were ranked by raw inner product and distances
+  were reported as ``1 / inner product``. This changes int8 clustering results.
+
 Version 0.1.0 (TBD)
 -------------------
 
