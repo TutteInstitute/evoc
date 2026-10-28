@@ -371,6 +371,8 @@ def test_expire_errors(window_case):
         model.update(new, X_expired=X[:5, :-1])
     with pytest.raises(ValueError, match="n_neighbors"):
         model.update(X_expired=np.arange(N_WINDOW - 5))
+    with pytest.raises(ValueError, match="retain at least one existing sample"):
+        model.update(new, X_expired=np.arange(N_WINDOW))
     # A failed update leaves the model unchanged
     np.testing.assert_array_equal(model.sample_ids_, np.arange(N_WINDOW))
 

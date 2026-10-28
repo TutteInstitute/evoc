@@ -1433,6 +1433,8 @@ class EVoC(BaseEstimator, ClusterMixin):
             keep = np.ones(n_current, dtype=bool)
         n_old = int(keep.sum())
         n_expired = n_current - n_old
+        if n_old == 0:
+            raise ValueError("An update must retain at least one existing sample")
         if n_old + (np.shape(X_new)[0] if has_new else 0) <= k:
             raise ValueError(
                 f"An update must leave more than n_neighbors={k} samples"
