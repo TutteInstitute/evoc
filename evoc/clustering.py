@@ -1281,9 +1281,10 @@ class EVoC(BaseEstimator, ClusterMixin):
             node embedding's gradients. "all" re-optimises every position,
             starting from the current embedding, which lets the embedding
             adapt to the new samples but moves existing samples. On MNIST
-            (adding 10k samples to 60k) "new" agreed better with the previous
-            layers than either "all" or a refit, at the same agreement with the
-            digit labels.
+            (adding 10k samples to 60k) "new" kept the existing samples'
+            labels (ARI 0.99 with the previous ``labels_``) better than "all"
+            (0.96) or a refit (0.93), with similar agreement with the digit
+            labels (ARI 0.89, 0.90 and 0.90).
 
         n_epochs : int or None, default=None
             Epochs of embedding optimisation. For ``optimize="new"`` the

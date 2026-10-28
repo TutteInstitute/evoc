@@ -237,8 +237,9 @@ Both first find each sample's nearest training samples with a search index
 
 The two methods agree closely in practice. On MNIST, predicting the 10,000 test
 images with a model fitted on the 60,000 training images agrees with the
-labels a fit on all 70,000 images gives them about as well as two such fits
-with different seeds agree with each other. A single sample takes well under a
+labels a fit on all 70,000 images gives them (ARI 0.91 for the ``labels_``
+layer) nearly as well as two such fits with different seeds agree with each
+other (0.94). A single sample takes well under a
 millisecond to predict.
 
 Adding samples to a model
@@ -271,8 +272,8 @@ update labels need not be contiguous. Options:
 On MNIST, adding the 10,000 test images to a model of the 60,000 training
 images gives a k-NN graph as accurate as building it from scratch, and the
 updated ``labels_`` agree with the previous labels on the training images
-better than a refit on all images does, at the same accuracy against the digit
-labels.
+(ARI 0.99) better than a refit on all images does (0.93), with similar
+agreement with the digit labels (0.89 and 0.90).
 
 Nearest-neighbour search
 ~~~~~~~~~~~~~~~~~~~~~~~~
