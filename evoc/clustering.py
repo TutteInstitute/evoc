@@ -30,6 +30,13 @@ from .knn_graph import knn_graph
 from .label_propagation import label_propagation_init
 from .node_embedding import node_embedding
 from .graph_construction import neighbor_graph_matrix
+from .prediction import (
+    ClusterHierarchy,
+    PredictionData,
+    as_cluster_ids,
+    embedding_core_distances,
+)
+from .search.kernels import prepare_data
 
 
 def build_cluster_layers(
@@ -41,6 +48,7 @@ def build_cluster_layers(
     reproducible_flag=False,
     min_similarity_threshold=0.2,
     max_layers=10,
+    return_tree=False,
 ):
     """Build hierarchical cluster layers from embedding data.
 
@@ -77,6 +85,11 @@ def build_cluster_layers(
         The maximum number of cluster layers to return. The algorithm will select up to
         this many diverse peaks based on persistence and similarity criteria.
 
+    return_tree : bool, default=False
+        If True, also return a :class:`evoc.prediction.ClusterHierarchy`
+        recording the condensed tree(s) and the clusters selected for each
+        layer, and the core distances of the points in ``data``.
+
     Returns
     -------
     cluster_layers : list of array-like of shape (n_samples,)
@@ -90,6 +103,12 @@ def build_cluster_layers(
     persistence_scores : list of float
         The persistence scores for each cluster layer, indicating the quality or
         stability of the clustering at that layer.
+
+    hierarchy : ClusterHierarchy
+        Only returned if ``return_tree`` is True.
+
+    core_distances : array of shape (n_samples,)
+        Only returned if ``return_tree`` is True.
     """
     n_samples = data.shape[0]
     min_cluster_size = base_min_cluster_size
@@ -99,18 +118,19 @@ def build_cluster_layers(
 
     n_threads = numba.get_num_threads()
 
+    effective_min_samples = min_cluster_size if min_samples is None else min_samples
     numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(
         numba_tree,
         n_threads,
-        min_samples=min_cluster_size if min_samples is None else min_samples,
+        min_samples=effective_min_samples,
         reproducible=reproducible_flag,
     )
     sorted_mst = edges[np.argsort(edges.T[2])]
     uncondensed_tree = mst_to_linkage_tree(sorted_mst)
     if base_n_clusters is not None:
-        leaves, clusters, strengths = _binary_search_for_n_clusters(
-            uncondensed_tree, base_n_clusters, n_samples=n_samples
+        leaves, clusters, strengths, base_tree = _binary_search_for_n_clusters(
+            uncondensed_tree, base_n_clusters, n_samples=n_samples, return_tree=True
         )
         cluster_sizes = np.bincount(clusters[clusters >= 0])
         if len(cluster_sizes) > 0:
@@ -126,6 +146,14 @@ def build_cluster_layers(
         strengths = get_point_membership_strength_vector(
             condensed_tree, leaves, clusters
         )
+        base_tree = condensed_tree
+
+    # Trees and selected clusters per layer, for return_tree
+    condensed_trees = [condensed_tree]
+    if base_tree is not condensed_tree:
+        condensed_trees.append(base_tree)
+    layer_tree = [len(condensed_trees) - 1]
+    layer_clusters = [as_cluster_ids(leaves)]
 
     mask = condensed_tree.child >= n_samples
     cluster_tree = mask_condensed_tree(condensed_tree, mask)
@@ -173,6 +201,8 @@ def build_cluster_layers(
             np.where((births <= best_birth) & (deaths > best_birth))[0] + n_samples
         )
         labels, strengths = extract_clusters_by_id(condensed_tree, selected_clusters)
+        layer_tree.append(0)
+        layer_clusters.append(as_cluster_ids(selected_clusters))
         cluster_layers.append(labels)
         membership_strength_layers.append(strengths)
         persistence_scores.append(persistence)
@@ -185,6 +215,25 @@ def build_cluster_layers(
     membership_strength_layers = [membership_strength_layers[i] for i in sorted_indices]
     persistence_scores = [persistence_scores[i] for i in sorted_indices]
 
+    if return_tree:
+        hierarchy = ClusterHierarchy(
+            condensed_trees=condensed_trees,
+            layer_tree=[layer_tree[i] for i in sorted_indices],
+            layer_clusters=[layer_clusters[i] for i in sorted_indices],
+            min_cluster_size=min_cluster_size,
+            min_samples=effective_min_samples,
+            n_samples=n_samples,
+        )
+        core_distances = embedding_core_distances(
+            data, effective_min_samples, tree=numba_tree
+        )
+        return (
+            cluster_layers,
+            membership_strength_layers,
+            persistence_scores,
+            hierarchy,
+            core_distances,
+        )
     return cluster_layers, membership_strength_layers, persistence_scores
 
 
@@ -207,6 +256,7 @@ def evoc_clusters(
     min_similarity_threshold=0.2,
     max_layers=10,
     n_label_prop_iter=20,
+    prediction_data=False,
 ):
     """Cluster data using the EVoC algorithm.
 
@@ -305,6 +355,12 @@ def evoc_clusters(
         The number of iterations to use in the label propagation algorithm when
         initializing the node embedding.
 
+    prediction_data : bool, default=False
+        If True, also return a :class:`evoc.prediction.PredictionData` record
+        holding what ``EVoC.predict`` and ``EVoC.update`` need (the prepared
+        training data, k-NN bandwidths, node embedding, condensed trees and
+        core distances). Clustering results are unaffected.
+
     Returns
     -------
 
@@ -325,6 +381,9 @@ def evoc_clusters(
     duplicates : set of tuple of int
         Only returned in ``return_duplicates`` is True. A set of pairs of indices of
         potential duplicate points in the data.
+
+    prediction_data : PredictionData
+        Only returned if ``prediction_data`` is True; always the last element.
     """
     if node_embedding_init not in ("label_prop", None):
         raise ValueError(
@@ -337,9 +396,18 @@ def evoc_clusters(
     nn_inds, nn_dists = knn_graph(
         data, n_neighbors=n_neighbors, random_state=random_state
     )
-    graph = neighbor_graph_matrix(
-        neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
-    )
+    if prediction_data:
+        graph, sigmas, rhos = neighbor_graph_matrix(
+            neighbor_scale * n_neighbors,
+            nn_inds,
+            nn_dists,
+            symmetrize_graph,
+            return_bandwidths=True,
+        )
+    else:
+        graph = neighbor_graph_matrix(
+            neighbor_scale * n_neighbors, nn_inds, nn_dists, symmetrize_graph
+        )
     n_embedding_components = node_embedding_dim or min(max(n_neighbors // 4, 4), 15)
     if node_embedding_init == "label_prop":
         init_embedding = label_propagation_init(
@@ -375,18 +443,37 @@ def evoc_clusters(
     n_threads = numba.get_num_threads()
 
     if approx_n_clusters is not None:
-        cluster_vector, strengths = binary_search_for_n_clusters(
-            embedding,
-            approx_n_clusters,
-            n_threads,
-            min_samples=min_samples,
-        )
-        if return_duplicates:
-            return [cluster_vector], [strengths], [0.0], nn_inds, nn_dists, duplicates
+        if prediction_data:
+            cluster_vector, strengths, condensed_tree, leaves = (
+                binary_search_for_n_clusters(
+                    embedding,
+                    approx_n_clusters,
+                    n_threads,
+                    min_samples=min_samples,
+                    return_tree=True,
+                )
+            )
+            hierarchy = ClusterHierarchy(
+                condensed_trees=[condensed_tree],
+                layer_tree=[0],
+                layer_clusters=[as_cluster_ids(leaves)],
+                min_cluster_size=None,
+                min_samples=min_samples,
+                n_samples=data.shape[0],
+            )
+            core_distances = embedding_core_distances(embedding, min_samples)
         else:
-            return [cluster_vector], [strengths], [0.0], nn_inds, nn_dists
+            cluster_vector, strengths = binary_search_for_n_clusters(
+                embedding,
+                approx_n_clusters,
+                n_threads,
+                min_samples=min_samples,
+            )
+        cluster_layers = [cluster_vector]
+        membership_strengths = [strengths]
+        persistence_scores = [0.0]
     else:
-        cluster_layers, membership_strengths, persistence_scores = build_cluster_layers(
+        layer_results = build_cluster_layers(
             embedding,
             min_samples=min_samples,
             base_min_cluster_size=base_min_cluster_size,
@@ -394,25 +481,61 @@ def evoc_clusters(
             reproducible_flag=reproducible_flag,
             min_similarity_threshold=min_similarity_threshold,
             max_layers=max_layers,
+            return_tree=prediction_data,
         )
-
-        if return_duplicates:
-            return (
+        if prediction_data:
+            (
                 cluster_layers,
                 membership_strengths,
                 persistence_scores,
-                nn_inds,
-                nn_dists,
-                duplicates,
-            )
+                hierarchy,
+                core_distances,
+            ) = layer_results
         else:
-            return (
-                cluster_layers,
-                membership_strengths,
-                persistence_scores,
-                nn_inds,
-                nn_dists,
+            cluster_layers, membership_strengths, persistence_scores = layer_results
+
+    result = [
+        cluster_layers,
+        membership_strengths,
+        persistence_scores,
+        nn_inds,
+        nn_dists,
+    ]
+    if return_duplicates:
+        result.append(duplicates)
+    if prediction_data:
+        prepared_data, inv_norms = prepare_data(data)
+        if prepared_data is data:
+            prepared_data = prepared_data.copy()
+        result.append(
+            PredictionData(
+                data=prepared_data,
+                input_dtype=prepared_data.dtype.type,
+                inv_norms=inv_norms,
+                sigmas=sigmas,
+                rhos=rhos,
+                mean_knn_distance=float(np.mean(nn_dists.astype(np.float32))),
+                embedding=np.ascontiguousarray(embedding, dtype=np.float32),
+                hierarchy=hierarchy,
+                core_distances=core_distances,
+                params=dict(
+                    n_neighbors=n_neighbors,
+                    neighbor_scale=neighbor_scale,
+                    symmetrize_graph=symmetrize_graph,
+                    n_components=n_embedding_components,
+                    n_epochs=n_epochs,
+                    noise_level=noise_level,
+                    min_samples=min_samples,
+                    base_min_cluster_size=base_min_cluster_size,
+                    base_n_clusters=base_n_clusters,
+                    approx_n_clusters=approx_n_clusters,
+                    min_similarity_threshold=min_similarity_threshold,
+                    max_layers=max_layers,
+                    reproducible_flag=reproducible_flag,
+                ),
             )
+        )
+    return tuple(result)
 
 
 class EVoC(BaseEstimator, ClusterMixin):
@@ -506,6 +629,14 @@ class EVoC(BaseEstimator, ClusterMixin):
         the label propagation process takes to converge when node_embedding_init
         is set to 'label_prop'.
 
+    prediction_data : bool, default=False
+        Whether to keep the state needed by :meth:`predict`,
+        :meth:`predict_layers` and :meth:`update` (see ``prediction_data_``).
+        This keeps a copy of the training data (as float32 for float input),
+        the node embedding and the condensed trees, so it costs memory roughly
+        the size of the training data plus ``n_samples * (n_components + 4)``
+        floats. Clustering results are the same either way.
+
     Attributes
     ----------
 
@@ -540,6 +671,11 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     duplicates_ : set of tuple of int
         A set of pairs of indices of potential duplicate points in the data.
+
+    prediction_data_ : PredictionData
+        Only if ``prediction_data=True``: the prepared training data, k-NN
+        bandwidths, node embedding (``prediction_data_.embedding``), condensed
+        trees and core distances used by :meth:`predict` and :meth:`update`.
     """
 
     def __init__(
@@ -559,6 +695,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         min_similarity_threshold: float = 0.2,
         max_layers: int = 10,
         n_label_prop_iter=20,
+        prediction_data: bool = False,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.noise_level = noise_level
@@ -575,6 +712,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         self.min_similarity_threshold = min_similarity_threshold
         self.max_layers = max_layers
         self.n_label_prop_iter = n_label_prop_iter
+        self.prediction_data = prediction_data
 
     def fit_predict(self, X, y=None, **fit_params):
         """Fit the model to the data and return the clustering labels.
@@ -609,15 +747,9 @@ class EVoC(BaseEstimator, ClusterMixin):
 
         X = check_array(X)
         current_random_state = check_random_state(self.random_state)
+        self._clear_prediction_caches()
 
-        (
-            self.cluster_layers_,
-            self.membership_strength_layers_,
-            self.persistence_scores_,
-            self.nn_inds_,
-            self.nn_dists_,
-            self.duplicates_,
-        ) = evoc_clusters(
+        results = evoc_clusters(
             X,
             n_neighbors=self.n_neighbors,
             noise_level=self.noise_level,
@@ -636,8 +768,25 @@ class EVoC(BaseEstimator, ClusterMixin):
             min_similarity_threshold=self.min_similarity_threshold,
             max_layers=self.max_layers,
             n_label_prop_iter=self.n_label_prop_iter,
+            prediction_data=self.prediction_data,
         )
+        (
+            self.cluster_layers_,
+            self.membership_strength_layers_,
+            self.persistence_scores_,
+            self.nn_inds_,
+            self.nn_dists_,
+            self.duplicates_,
+        ) = results[:6]
+        if self.prediction_data:
+            self.prediction_data_ = results[6]
+        elif hasattr(self, "prediction_data_"):
+            del self.prediction_data_
 
+        self._select_labels()
+        return self.labels_
+
+    def _select_labels(self):
         if len(self.cluster_layers_) == 1:
             self.labels_ = self.cluster_layers_[0]
             self.membership_strengths_ = self.membership_strength_layers_[0]
@@ -645,8 +794,6 @@ class EVoC(BaseEstimator, ClusterMixin):
             best_layer = np.argmax(self.persistence_scores_)
             self.labels_ = self.cluster_layers_[best_layer]
             self.membership_strengths_ = self.membership_strength_layers_[best_layer]
-
-        return self.labels_
 
     def fit(self, X, y=None, **fit_params):
         """Fit the model to the data.
@@ -710,3 +857,55 @@ class EVoC(BaseEstimator, ClusterMixin):
         if not hasattr(self, "_cluster_tree"):
             self._cluster_tree = build_cluster_tree(self.cluster_layers_)
         return self._cluster_tree
+
+    # ------------------------------------------------------------ prediction
+    _PREDICTION_CACHES = ("_search_index", "_embedding_tree", "_prediction_cache")
+
+    def _clear_prediction_caches(self):
+        for name in self._PREDICTION_CACHES + ("_cluster_tree",):
+            self.__dict__.pop(name, None)
+
+    def _check_prediction_data(self):
+        check_is_fitted(self, "cluster_layers_")
+        if not hasattr(self, "prediction_data_"):
+            raise ValueError(
+                "This EVoC model was fitted without prediction data. Refit with "
+                "prediction_data=True to use predict, predict_layers or update."
+            )
+
+    def prepare_prediction(self):
+        """Build the structures used by :meth:`predict` and :meth:`update` now.
+
+        They are otherwise built on first use: a nearest-neighbour search
+        index over the training data, a kd-tree over the node embedding, and
+        per-layer calibration for ``method="vote"``. They are not pickled, and
+        are rebuilt on first use after unpickling.
+
+        Returns
+        -------
+        self : EVoC
+        """
+        self._check_prediction_data()
+        self._get_search_index()
+        return self
+
+    def _get_search_index(self):
+        if getattr(self, "_search_index", None) is None:
+            from .search import prepare_search
+
+            pdata = self.prediction_data_
+            self._search_index = prepare_search(
+                pdata.data,
+                self.nn_inds_,
+                self.nn_dists_,
+                random_state=check_random_state(self.random_state).randint(
+                    0, np.iinfo(np.int32).max
+                ),
+            )
+        return self._search_index
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        for name in self._PREDICTION_CACHES:
+            state.pop(name, None)
+        return state

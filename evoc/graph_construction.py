@@ -21,12 +21,22 @@ NPY_INFINITY = np.inf
     parallel=True,
     cache=True,
 )
-def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0):
+def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0, mean_distance=-1.0):
+    """Per-row bandwidths (sigma) and local connectivity offsets (rho).
+
+    Column 0 of ``distances`` is each point itself (distance 0). Rows with no
+    non-zero distance fall back to a scale based on the mean of all
+    ``distances``, or on ``mean_distance`` if that is non-negative (used to
+    reproduce the training scale for new samples).
+    """
     target = np.log2(k) * bandwidth
     rho = np.zeros(distances.shape[0], dtype=np.float32)
     sigma = np.zeros(distances.shape[0], dtype=np.float32)
 
-    mean_distances = np.mean(distances)
+    if mean_distance >= 0.0:
+        mean_distances = mean_distance
+    else:
+        mean_distances = np.mean(distances)
 
     for i in numba.prange(distances.shape[0]):
         lo = 0.0
@@ -126,6 +136,7 @@ def neighbor_graph_matrix(
     knn_indices,
     knn_dists,
     symmetrize=True,
+    return_bandwidths=False,
 ):
     """Construct a sparse graph from k-nearest neighbor distances.
 
@@ -150,6 +161,10 @@ def neighbor_graph_matrix(
         A_sym = A + A^T - A * A^T (union of forward and reverse edges).
         If False, the graph remains directed (asymmetric).
 
+    return_bandwidths : bool, default=False
+        If True, also return the per-sample ``sigmas`` and ``rhos`` computed by
+        ``smooth_knn_dist``.
+
     Returns
     -------
     graph : scipy.sparse._csr_matrix or scipy.sparse._coo_matrix
@@ -158,6 +173,9 @@ def neighbor_graph_matrix(
         sample j, or 0 if j is not in the k-nearest neighbors of i.
         If symmetrize=True, the matrix is symmetric and in CSR format.
         If symmetrize=False, returns a CSR matrix (asymmetric).
+
+    sigmas, rhos : arrays of shape (n_samples,)
+        Only returned if ``return_bandwidths`` is True.
     """
     knn_dists = knn_dists.astype(np.float32)
 
@@ -187,4 +205,6 @@ def neighbor_graph_matrix(
 
     result.eliminate_zeros()
 
+    if return_bandwidths:
+        return result, sigmas, rhos
     return result
