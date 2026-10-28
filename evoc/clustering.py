@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import numpy as np
 import numba
 
@@ -31,6 +33,7 @@ from .label_propagation import label_propagation_init
 from .node_embedding import node_embedding
 from .graph_construction import neighbor_graph_matrix
 from .prediction import (
+    SERIAL_BATCH_SIZE,
     ClusterHierarchy,
     PredictionData,
     apply_thresholds,
@@ -47,6 +50,21 @@ from .prediction import (
     weighted_positions,
 )
 from .search.kernels import prepare_data
+
+
+@contextmanager
+def _single_threaded(enabled=True):
+    """Run numba parallel code on the calling thread only (thread-local), which
+    avoids the cost of waking the thread pool for small batches."""
+    if not enabled:
+        yield
+        return
+    previous = numba.get_num_threads()
+    numba.set_num_threads(1)
+    try:
+        yield
+    finally:
+        numba.set_num_threads(previous)
 
 
 def build_cluster_layers(
@@ -1176,13 +1194,17 @@ class EVoC(BaseEstimator, ClusterMixin):
         return positions
 
     def _predict_embedding(self, X, k, epsilon, refine_epochs):
-        positions = self.embed(X, k=k, epsilon=epsilon, refine_epochs=refine_epochs)
-        labels, strengths = predict_from_positions(
-            positions,
-            self.prediction_data_,
-            self._get_embedding_tree(),
-            self._get_tree_arrays(),
-        )
+        n_queries = np.shape(X)[0] if np.ndim(X) == 2 else 0
+        with _single_threaded(n_queries < SERIAL_BATCH_SIZE):
+            positions = self.embed(
+                X, k=k, epsilon=epsilon, refine_epochs=refine_epochs
+            )
+            labels, strengths = predict_from_positions(
+                positions,
+                self.prediction_data_,
+                self._get_embedding_tree(),
+                self._get_tree_arrays(),
+            )
         return labels, strengths
 
     def _get_search_index(self):
@@ -1223,9 +1245,9 @@ class EVoC(BaseEstimator, ClusterMixin):
         """Add samples to a fitted model without refitting from scratch.
 
         Requires a model fitted with ``prediction_data=True``. The k-NN graph
-        is extended incrementally and the fuzzy graph rebuilt. New samples
-        start in the node embedding at the weighted mean of their neighbours'
-        positions and are then optimised against the graph. Then, by default,
+        is extended incrementally and the fuzzy graph rebuilt. New samples are
+        placed in the node embedding at the mean of their neighbours'
+        positions, weighted by fuzzy graph edge weights. Then, by default,
         the embedding is re-clustered and each new layer is relabelled to
         agree with the corresponding old layer, so that cluster ids stay
         stable.
@@ -1253,20 +1275,24 @@ class EVoC(BaseEstimator, ClusterMixin):
             fit would label them.
 
         optimize : {"new", "all"}, default="new"
-            Which embedding positions to optimise when re-clustering. "new"
-            moves only the new samples (with the node embedding's gradients;
-            existing samples stay put), which keeps the clustering of existing
-            samples most stable. "all" re-optimises every position, starting
-            from the current embedding, which lets the embedding adapt to the
-            new samples but moves existing samples. On MNIST (adding 10k
-            samples to 60k) "new" agreed better with the previous layers than
-            either "all" or a refit, at the same agreement with the digit
-            labels.
+            Which embedding positions may move when re-clustering. With "new"
+            existing samples keep their positions and only the new samples'
+            positions are (optionally, see ``n_epochs``) optimised with the
+            node embedding's gradients. "all" re-optimises every position,
+            starting from the current embedding, which lets the embedding
+            adapt to the new samples but moves existing samples. On MNIST
+            (adding 10k samples to 60k) "new" agreed better with the previous
+            layers than either "all" or a refit, at the same agreement with the
+            digit labels.
 
         n_epochs : int or None, default=None
-            Epochs of embedding optimisation. Defaults to the fitted
-            ``n_epochs`` for ``optimize="new"`` and to
-            ``max(10, round(0.4 * n_epochs))`` for ``optimize="all"``.
+            Epochs of embedding optimisation. For ``optimize="new"`` the
+            default is 0: new samples stay at the weighted mean of their
+            neighbours, which gave the most stable and accurate clusterings in
+            our measurements (optimising only the new samples against a fixed
+            embedding made results depend strongly on the random negative
+            samples). For ``optimize="all"`` the default is
+            ``max(10, round(0.4 * n_epochs))`` of the fitted ``n_epochs``.
 
         initial_alpha : float or None, default=None
             Initial learning rate; defaults to 0.1 (as in fitting) for
@@ -1357,7 +1383,7 @@ class EVoC(BaseEstimator, ClusterMixin):
                 # Only the new samples move; existing positions are kept
                 embedding = np.ascontiguousarray(initial, dtype=np.float32)
                 if n_epochs is None:
-                    n_epochs = params["n_epochs"]
+                    n_epochs = 0
                 refine_positions(
                     embedding[n_old:],
                     np.ascontiguousarray(nn_inds[n_old:, 1:], dtype=np.int32),

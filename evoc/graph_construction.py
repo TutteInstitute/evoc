@@ -18,9 +18,53 @@ NPY_INFINITY = np.inf
         "hi": numba.types.float32,
     },
     fastmath=True,
-    parallel=True,
-    cache=True,
+    inline="always",
 )
+def _smooth_knn_dist_row(distances, i, target, n_iter, mean_distances, rho, sigma):
+    lo = 0.0
+    hi = NPY_INFINITY
+    mid = 1.0
+
+    ith_distances = distances[i]
+    non_zero_dists = ith_distances[ith_distances > 0.0]
+    if non_zero_dists.shape[0] >= 1:
+        rho[i] = non_zero_dists[0]
+
+    for n in range(n_iter):
+
+        psum = 0.0
+        for j in range(1, distances.shape[1]):
+            d = distances[i, j] - rho[i]
+            if d > 0:
+                psum += np.exp(-(d / mid))
+            else:
+                psum += 1.0
+
+        if np.fabs(psum - target) < SMOOTH_K_TOLERANCE:
+            break
+
+        if psum > target:
+            hi = mid
+            mid = (lo + hi) / 2.0
+        else:
+            lo = mid
+            if hi == NPY_INFINITY:
+                mid *= 2
+            else:
+                mid = (lo + hi) / 2.0
+
+    sigma[i] = mid
+
+    if rho[i] > 0.0:
+        mean_ith_distances = np.mean(ith_distances)
+        if sigma[i] < MIN_K_DIST_SCALE * mean_ith_distances:
+            sigma[i] = MIN_K_DIST_SCALE * mean_ith_distances
+    else:
+        if sigma[i] < MIN_K_DIST_SCALE * mean_distances:
+            sigma[i] = MIN_K_DIST_SCALE * mean_distances
+
+
+@numba.njit(fastmath=True, parallel=True, cache=True)
 def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0, mean_distance=-1.0):
     """Per-row bandwidths (sigma) and local connectivity offsets (rho).
 
@@ -39,47 +83,27 @@ def smooth_knn_dist(distances, k, n_iter=64, bandwidth=1.0, mean_distance=-1.0):
         mean_distances = np.mean(distances)
 
     for i in numba.prange(distances.shape[0]):
-        lo = 0.0
-        hi = NPY_INFINITY
-        mid = 1.0
+        _smooth_knn_dist_row(distances, i, target, n_iter, mean_distances, rho, sigma)
 
-        ith_distances = distances[i]
-        non_zero_dists = ith_distances[ith_distances > 0.0]
-        if non_zero_dists.shape[0] >= 1:
-            rho[i] = non_zero_dists[0]
+    return sigma, rho
 
-        for n in range(n_iter):
 
-            psum = 0.0
-            for j in range(1, distances.shape[1]):
-                d = distances[i, j] - rho[i]
-                if d > 0:
-                    psum += np.exp(-(d / mid))
-                else:
-                    psum += 1.0
+@numba.njit(fastmath=True, cache=True)
+def smooth_knn_dist_serial(
+    distances, k, n_iter=64, bandwidth=1.0, mean_distance=-1.0
+):
+    """Single-threaded :func:`smooth_knn_dist`, for small batches."""
+    target = np.log2(k) * bandwidth
+    rho = np.zeros(distances.shape[0], dtype=np.float32)
+    sigma = np.zeros(distances.shape[0], dtype=np.float32)
 
-            if np.fabs(psum - target) < SMOOTH_K_TOLERANCE:
-                break
+    if mean_distance >= 0.0:
+        mean_distances = mean_distance
+    else:
+        mean_distances = np.mean(distances)
 
-            if psum > target:
-                hi = mid
-                mid = (lo + hi) / 2.0
-            else:
-                lo = mid
-                if hi == NPY_INFINITY:
-                    mid *= 2
-                else:
-                    mid = (lo + hi) / 2.0
-
-        sigma[i] = mid
-
-        if rho[i] > 0.0:
-            mean_ith_distances = np.mean(ith_distances)
-            if sigma[i] < MIN_K_DIST_SCALE * mean_ith_distances:
-                sigma[i] = MIN_K_DIST_SCALE * mean_ith_distances
-        else:
-            if sigma[i] < MIN_K_DIST_SCALE * mean_distances:
-                sigma[i] = MIN_K_DIST_SCALE * mean_distances
+    for i in range(distances.shape[0]):
+        _smooth_knn_dist_row(distances, i, target, n_iter, mean_distances, rho, sigma)
 
     return sigma, rho
 

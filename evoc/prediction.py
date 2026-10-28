@@ -5,7 +5,7 @@ import numba
 import numpy as np
 
 from .clustering_utilities import extract_clusters_by_id
-from .graph_construction import smooth_knn_dist
+from .graph_construction import smooth_knn_dist, smooth_knn_dist_serial
 from .numba_kdtree import build_kdtree, parallel_tree_query
 
 ClusterHierarchy = namedtuple(
@@ -111,27 +111,50 @@ def embedding_core_distances(embedding, min_samples, tree=None):
 
 
 # ------------------------------------------------------------------ vote method
+# Batches smaller than this use single-threaded kernels: launching parallel
+# kernels costs tens of microseconds per call, and more on a busy machine.
+SERIAL_BATCH_SIZE = 64
+
+
+@numba.njit(fastmath=True, inline="always")
+def _membership_weights_row(indices, distances, sigmas, rhos, weights, i):
+    rho = rhos[i]
+    sigma = sigmas[i]
+    for j in range(indices.shape[1]):
+        if indices[i, j] < 0:
+            continue
+        d = distances[i, j]
+        if (d - rho) <= 0.0 or sigma == 0.0:
+            weights[i, j] = 1.0
+        else:
+            weights[i, j] = np.exp(-((d - rho) / sigma))
+
+
 @numba.njit(parallel=True, fastmath=True, cache=True)
+def _membership_weights_parallel(indices, distances, sigmas, rhos):
+    weights = np.zeros(indices.shape, dtype=np.float32)
+    for i in numba.prange(indices.shape[0]):
+        _membership_weights_row(indices, distances, sigmas, rhos, weights, i)
+    return weights
+
+
+@numba.njit(fastmath=True, cache=True)
+def _membership_weights_serial(indices, distances, sigmas, rhos):
+    weights = np.zeros(indices.shape, dtype=np.float32)
+    for i in range(indices.shape[0]):
+        _membership_weights_row(indices, distances, sigmas, rhos, weights, i)
+    return weights
+
+
 def membership_weights(indices, distances, sigmas, rhos):
     """Edge weights from each query to its neighbours.
 
     Uses the same formula as ``compute_membership_strengths``; ``indices`` and
     ``distances`` exclude the query itself. Missing neighbours (-1) get 0.
     """
-    n, k = indices.shape
-    weights = np.zeros((n, k), dtype=np.float32)
-    for i in numba.prange(n):
-        rho = rhos[i]
-        sigma = sigmas[i]
-        for j in range(k):
-            if indices[i, j] < 0:
-                continue
-            d = distances[i, j]
-            if (d - rho) <= 0.0 or sigma == 0.0:
-                weights[i, j] = 1.0
-            else:
-                weights[i, j] = np.exp(-((d - rho) / sigma))
-    return weights
+    if indices.shape[0] < SERIAL_BATCH_SIZE:
+        return _membership_weights_serial(indices, distances, sigmas, rhos)
+    return _membership_weights_parallel(indices, distances, sigmas, rhos)
 
 
 def query_bandwidths(distances, pdata):
@@ -141,14 +164,91 @@ def query_bandwidths(distances, pdata):
     with_self = np.zeros((n, distances.shape[1] + 1), dtype=np.float32)
     with_self[:, 1:] = distances
     params = pdata.params
-    return smooth_knn_dist(
+    function = smooth_knn_dist_serial if n < SERIAL_BATCH_SIZE else smooth_knn_dist
+    return function(
         with_self,
         float(params["neighbor_scale"] * params["n_neighbors"]),
         mean_distance=np.float64(pdata.mean_knn_distance),
     )
 
 
+@numba.njit(fastmath=True, inline="always")
+def _vote_row(
+    indices, weights, layer_labels, layer_strengths, best_labels, best_scores, i,
+    cluster_ids, cluster_scores,
+):
+    k = indices.shape[1]
+    total = np.float32(0.0)
+    for j in range(k):
+        if indices[i, j] >= 0:
+            total += weights[i, j]
+    if total <= 0.0:
+        return
+    for layer in range(layer_labels.shape[0]):
+        n_found = 0
+        for j in range(k):
+            idx = indices[i, j]
+            if idx < 0:
+                continue
+            c = layer_labels[layer, idx]
+            if c < 0:
+                continue
+            s = weights[i, j] * layer_strengths[layer, idx]
+            found = False
+            for m in range(n_found):
+                if cluster_ids[m] == c:
+                    cluster_scores[m] += s
+                    found = True
+                    break
+            if not found:
+                cluster_ids[n_found] = c
+                cluster_scores[n_found] = s
+                n_found += 1
+        if n_found == 0:
+            continue
+        best = 0
+        for m in range(1, n_found):
+            if cluster_scores[m] > cluster_scores[best] or (
+                cluster_scores[m] == cluster_scores[best]
+                and cluster_ids[m] < cluster_ids[best]
+            ):
+                best = m
+        best_labels[layer, i] = cluster_ids[best]
+        best_scores[layer, i] = cluster_scores[best] / total
+
+
 @numba.njit(parallel=True, fastmath=True, cache=True)
+def _vote_scores_parallel(indices, weights, layer_labels, layer_strengths):
+    n, k = indices.shape
+    n_layers = layer_labels.shape[0]
+    best_labels = np.full((n_layers, n), -1, dtype=np.int64)
+    best_scores = np.zeros((n_layers, n), dtype=np.float32)
+    for i in numba.prange(n):
+        cluster_ids = np.empty(k, dtype=np.int64)
+        cluster_scores = np.empty(k, dtype=np.float32)
+        _vote_row(
+            indices, weights, layer_labels, layer_strengths, best_labels,
+            best_scores, i, cluster_ids, cluster_scores,
+        )
+    return best_labels, best_scores
+
+
+@numba.njit(fastmath=True, cache=True)
+def _vote_scores_serial(indices, weights, layer_labels, layer_strengths):
+    n, k = indices.shape
+    n_layers = layer_labels.shape[0]
+    best_labels = np.full((n_layers, n), -1, dtype=np.int64)
+    best_scores = np.zeros((n_layers, n), dtype=np.float32)
+    cluster_ids = np.empty(k, dtype=np.int64)
+    cluster_scores = np.empty(k, dtype=np.float32)
+    for i in range(n):
+        _vote_row(
+            indices, weights, layer_labels, layer_strengths, best_labels,
+            best_scores, i, cluster_ids, cluster_scores,
+        )
+    return best_labels, best_scores
+
+
 def vote_scores(indices, weights, layer_labels, layer_strengths):
     """Weighted neighbour vote for every layer.
 
@@ -157,51 +257,9 @@ def vote_scores(indices, weights, layer_labels, layer_strengths):
     best cluster (-1 if no neighbour is clustered) and its score divided by the
     total edge weight, each of shape (n_layers, n_queries).
     """
-    n, k = indices.shape
-    n_layers = layer_labels.shape[0]
-    best_labels = np.full((n_layers, n), -1, dtype=np.int64)
-    best_scores = np.zeros((n_layers, n), dtype=np.float32)
-    for i in numba.prange(n):
-        total = np.float32(0.0)
-        for j in range(k):
-            if indices[i, j] >= 0:
-                total += weights[i, j]
-        if total <= 0.0:
-            continue
-        cluster_ids = np.empty(k, dtype=np.int64)
-        cluster_scores = np.empty(k, dtype=np.float32)
-        for layer in range(n_layers):
-            n_found = 0
-            for j in range(k):
-                idx = indices[i, j]
-                if idx < 0:
-                    continue
-                c = layer_labels[layer, idx]
-                if c < 0:
-                    continue
-                s = weights[i, j] * layer_strengths[layer, idx]
-                found = False
-                for m in range(n_found):
-                    if cluster_ids[m] == c:
-                        cluster_scores[m] += s
-                        found = True
-                        break
-                if not found:
-                    cluster_ids[n_found] = c
-                    cluster_scores[n_found] = s
-                    n_found += 1
-            if n_found == 0:
-                continue
-            best = 0
-            for m in range(1, n_found):
-                if cluster_scores[m] > cluster_scores[best] or (
-                    cluster_scores[m] == cluster_scores[best]
-                    and cluster_ids[m] < cluster_ids[best]
-                ):
-                    best = m
-            best_labels[layer, i] = cluster_ids[best]
-            best_scores[layer, i] = cluster_scores[best] / total
-    return best_labels, best_scores
+    if indices.shape[0] < SERIAL_BATCH_SIZE:
+        return _vote_scores_serial(indices, weights, layer_labels, layer_strengths)
+    return _vote_scores_parallel(indices, weights, layer_labels, layer_strengths)
 
 
 def stack_layers(cluster_layers, strength_layers):
@@ -336,24 +394,31 @@ def refine_positions(
     negative_sample_rate,
     seed,
 ):
-    """SGD on the query positions only, with the training embedding fixed.
+    """SGD on the given positions only, with the rest of the embedding fixed.
 
     Uses the attractive and repulsive gradients of ``node_embedding_epoch``:
-    each epoch pulls a query towards each neighbour (scaled by the edge
-    weight) and pushes it away from ``negative_sample_rate`` random training
-    points per neighbour.
+    each epoch pulls a point towards each neighbour (scaled by the edge
+    weight) and pushes it away from ``negative_sample_rate`` random rows of
+    ``embedding`` per neighbour. ``positions`` may be a view of rows of
+    ``embedding`` (to optimise those rows in place); each epoch reads the
+    positions from the end of the previous epoch, so results do not depend on
+    the number of threads. Rows of ``positions`` that are NaN are skipped.
     """
     n, k = indices.shape
     n_train = embedding.shape[0]
     dim = embedding.shape[1]
-    for i in numba.prange(n):
-        if np.isnan(positions[i, 0]):
-            continue
-        current = positions[i]
-        state = np.uint64(seed) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(i + 1)
-        n_neg = max(int(round(negative_sample_rate)), 0)
-        for epoch in range(n_epochs):
-            alpha = initial_alpha * (1.0 - epoch / n_epochs)
+    n_neg = max(int(round(negative_sample_rate)), 0)
+    states = np.empty(n, dtype=np.uint64)
+    for i in range(n):
+        states[i] = np.uint64(seed) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(i + 1)
+    updated = positions.copy()
+    for epoch in range(n_epochs):
+        alpha = initial_alpha * (1.0 - epoch / n_epochs)
+        for i in numba.prange(n):
+            if np.isnan(positions[i, 0]):
+                continue
+            current = updated[i]
+            state = states[i]
             for j in range(k):
                 idx = indices[i, j]
                 if idx < 0 or weights[i, j] <= 0.0:
@@ -388,6 +453,8 @@ def refine_positions(
                             elif grad_d < -4.0:
                                 grad_d = -4.0
                             current[d] += weights[i, j] * grad_d * alpha
+            states[i] = state
+        positions[:] = updated
     return positions
 
 
