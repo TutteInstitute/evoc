@@ -38,9 +38,13 @@ from .prediction import (
     calibrate_vote_thresholds,
     embedding_core_distances,
     membership_weights,
+    predict_from_positions,
     query_bandwidths,
+    refine_positions,
     stack_layers,
+    tree_arrays,
     vote_scores,
+    weighted_positions,
 )
 from .search.kernels import prepare_data
 
@@ -894,7 +898,24 @@ class EVoC(BaseEstimator, ClusterMixin):
         self._check_prediction_data()
         self._get_search_index()
         self._get_vote_thresholds()
+        self._get_embedding_tree()
+        self._get_tree_arrays()
         return self
+
+    def _get_embedding_tree(self):
+        if getattr(self, "_embedding_tree", None) is None:
+            self._embedding_tree = build_kdtree(self.prediction_data_.embedding)
+        return self._embedding_tree
+
+    def _get_tree_arrays(self):
+        cache = self._cache()
+        if "tree_arrays" not in cache:
+            hierarchy = self.prediction_data_.hierarchy
+            cache["tree_arrays"] = [
+                tree_arrays(tree, hierarchy.n_samples)
+                for tree in hierarchy.condensed_trees
+            ]
+        return cache["tree_arrays"]
 
     def _cache(self):
         if getattr(self, "_prediction_cache", None) is None:
@@ -950,7 +971,14 @@ class EVoC(BaseEstimator, ClusterMixin):
         return thresholds
 
     def predict_layers(
-        self, X, *, method="vote", k=None, epsilon=0.1, noise_threshold=None
+        self,
+        X,
+        *,
+        method="vote",
+        k=None,
+        epsilon=0.1,
+        noise_threshold=None,
+        refine_epochs=10,
     ):
         """Assign new samples to clusters in every cluster layer.
 
@@ -985,6 +1013,14 @@ class EVoC(BaseEstimator, ClusterMixin):
             predicting the training samples from their neighbours reproduces
             the layer's training noise fraction.
 
+        refine_epochs : int, default=10
+            ``"embedding"`` only. Samples are placed in the node embedding at
+            the weighted mean of their neighbours' positions; this many epochs
+            of the node embedding's SGD (on the new samples only, with the
+            training embedding fixed) then refine their positions. Without
+            refinement the mean position tends to sit inside clusters, so fewer
+            samples are labelled noise than in training.
+
         Returns
         -------
         labels : list of arrays of shape (n_samples,)
@@ -997,7 +1033,9 @@ class EVoC(BaseEstimator, ClusterMixin):
         if method == "vote":
             labels, strengths = self._predict_vote(X, k, epsilon, noise_threshold)
         elif method == "embedding":
-            labels, strengths = self._predict_embedding(X, k, epsilon)
+            if noise_threshold is not None:
+                raise ValueError("noise_threshold only applies to method='vote'")
+            labels, strengths = self._predict_embedding(X, k, epsilon, refine_epochs)
         else:
             raise ValueError(
                 f"method should be 'vote' or 'embedding', not {method!r}"
@@ -1013,6 +1051,7 @@ class EVoC(BaseEstimator, ClusterMixin):
         k=None,
         epsilon=0.1,
         noise_threshold=None,
+        refine_epochs=10,
         return_strengths=False,
     ):
         """Assign new samples to clusters without refitting.
@@ -1044,7 +1083,12 @@ class EVoC(BaseEstimator, ClusterMixin):
         if not -n_layers <= layer < n_layers:
             raise ValueError(f"layer must be in [0, {n_layers}), got {layer}")
         labels, strengths = self.predict_layers(
-            X, method=method, k=k, epsilon=epsilon, noise_threshold=noise_threshold
+            X,
+            method=method,
+            k=k,
+            epsilon=epsilon,
+            noise_threshold=noise_threshold,
+            refine_epochs=refine_epochs,
         )
         if return_strengths:
             return labels[layer], strengths[layer]
@@ -1062,8 +1106,50 @@ class EVoC(BaseEstimator, ClusterMixin):
         thresholds = self._resolve_thresholds(noise_threshold, layer_labels.shape[0])
         return apply_thresholds(best_labels, best_scores, thresholds)
 
-    def _predict_embedding(self, X, k, epsilon):
-        raise NotImplementedError
+    def embed(self, X, *, k=None, epsilon=0.1, refine_epochs=10):
+        """Positions of new samples in the node embedding.
+
+        Each sample is placed at the mean of its nearest training samples'
+        embedding positions, weighted by fuzzy k-NN graph edge weights, and
+        optionally refined (see ``refine_epochs`` in :meth:`predict_layers`).
+        Samples with no neighbours get NaN positions.
+
+        Returns
+        -------
+        positions : array of shape (n_samples, n_components)
+        """
+        self._check_prediction_data()
+        pdata = self.prediction_data_
+        indices, distances = self._query_neighbors(X, k, epsilon)
+        sigmas, rhos = query_bandwidths(distances, pdata)
+        weights = membership_weights(indices, distances, sigmas, rhos)
+        positions = weighted_positions(indices, weights, pdata.embedding)
+        if refine_epochs > 0:
+            seed = check_random_state(self.random_state).randint(
+                0, np.iinfo(np.int32).max
+            )
+            positions = refine_positions(
+                positions,
+                indices,
+                weights,
+                pdata.embedding,
+                int(refine_epochs),
+                0.1,
+                float(pdata.params["noise_level"]),
+                1.0,
+                np.uint64(seed),
+            )
+        return positions
+
+    def _predict_embedding(self, X, k, epsilon, refine_epochs):
+        positions = self.embed(X, k=k, epsilon=epsilon, refine_epochs=refine_epochs)
+        labels, strengths = predict_from_positions(
+            positions,
+            self.prediction_data_,
+            self._get_embedding_tree(),
+            self._get_tree_arrays(),
+        )
+        return labels, strengths
 
     def _get_search_index(self):
         if getattr(self, "_search_index", None) is None:

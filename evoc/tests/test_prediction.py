@@ -237,3 +237,68 @@ def test_predict_noise_threshold_override(held_out):
     assert np.mean(none < 0) <= np.mean(model.predict(X_test) < 0)
     with pytest.raises(ValueError):
         model.predict_layers(X_test, noise_threshold=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1])
+
+
+# ------------------------------------------------------------ predict: embedding
+from evoc.prediction import predict_from_positions
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"base_n_clusters": 6}, {"approx_n_clusters": 5}]
+)
+def test_embedding_self_prediction(kwargs):
+    X, _ = _blob_data("float", seed=5)
+    model = EVoC(random_state=2, prediction_data=True, **kwargs).fit(X)
+    pdata = model.prediction_data_
+    labels, strengths = predict_from_positions(
+        pdata.embedding,
+        pdata,
+        model._get_embedding_tree(),
+        model._get_tree_arrays(),
+        exclude=np.arange(X.shape[0]),
+    )
+    for layer, train_labels in enumerate(model.cluster_layers_):
+        assert np.mean(labels[layer] == train_labels) >= 0.98
+        clustered = train_labels >= 0
+        np.testing.assert_allclose(
+            strengths[layer][clustered & (labels[layer] == train_labels)],
+            model.membership_strength_layers_[layer][
+                clustered & (labels[layer] == train_labels)
+            ],
+            atol=0.05,
+        )
+
+
+def test_predict_embedding_held_out(held_out):
+    model, X_test, y_train, y_test = held_out
+    train_labels = model.labels_
+    labels, strengths = model.predict(
+        X_test, method="embedding", return_strengths=True
+    )
+    assert labels.shape == (X_test.shape[0],)
+    assert np.all((strengths >= 0) & (strengths <= 1))
+    assert np.all(strengths[labels < 0] == 0)
+    clustered = labels >= 0
+    test_ari = adjusted_rand_score(y_test[clustered], labels[clustered])
+    train_ari = adjusted_rand_score(
+        y_train[train_labels >= 0], train_labels[train_labels >= 0]
+    )
+    assert test_ari >= min(0.9, train_ari - 0.05)
+    assert abs(np.mean(labels < 0) - np.mean(train_labels < 0)) < 0.1
+    # Vote and embedding mostly agree on clustered points
+    vote = model.predict(X_test)
+    both = (vote >= 0) & clustered
+    assert np.mean(vote[both] == labels[both]) >= 0.9
+
+
+def test_predict_embedding_refine_and_embed(held_out):
+    model, X_test, _, _ = held_out
+    positions = model.embed(X_test, refine_epochs=0)
+    assert positions.shape == (X_test.shape[0], model.prediction_data_.embedding.shape[1])
+    refined = model.embed(X_test, refine_epochs=5)
+    assert np.all(np.isfinite(refined))
+    assert not np.allclose(refined, positions)
+    labels = model.predict(X_test, method="embedding", refine_epochs=5)
+    assert labels.shape == (X_test.shape[0],)
+    with pytest.raises(ValueError):
+        model.predict(X_test, method="embedding", noise_threshold=0.5)

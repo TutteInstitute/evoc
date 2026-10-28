@@ -221,3 +221,330 @@ def apply_thresholds(best_labels, best_scores, thresholds):
     labels[noise] = -1
     strengths[noise] = 0.0
     return labels, strengths
+
+
+# ------------------------------------------------------------- embedding method
+TreeArrays = namedtuple(
+    "TreeArrays",
+    [
+        "root",
+        "point_parent",  # cluster each training point falls out of
+        "point_lambda",  # ... and the lambda at which it does
+        "cluster_parent",  # indexed by cluster - root; -1 for the root
+        "cluster_birth",  # lambda at which each cluster appears (0 for root)
+        "max_lambda",  # max lambda of points falling directly out of each cluster
+        "max_child_lambda",  # max lambda of any child (point or cluster)
+    ],
+)
+
+
+def tree_arrays(tree, n_samples):
+    """Lookup arrays for placing new points in a condensed tree."""
+    parent = np.asarray(tree.parent, dtype=np.int64)
+    child = np.asarray(tree.child, dtype=np.int64)
+    lambda_val = np.asarray(tree.lambda_val, dtype=np.float64)
+    child_size = np.asarray(tree.child_size)
+    if parent.shape[0] == 0:
+        root = n_samples
+        n_clusters = 1
+    else:
+        root = int(parent.min())
+        n_clusters = int(max(parent.max(), child.max())) + 1 - root
+    point_parent = np.full(n_samples, -1, dtype=np.int64)
+    point_lambda = np.zeros(n_samples, dtype=np.float64)
+    is_point = child < root
+    point_parent[child[is_point]] = parent[is_point]
+    point_lambda[child[is_point]] = lambda_val[is_point]
+    cluster_parent = np.full(n_clusters, -1, dtype=np.int64)
+    cluster_birth = np.zeros(n_clusters, dtype=np.float64)
+    is_cluster = ~is_point
+    cluster_parent[child[is_cluster] - root] = parent[is_cluster]
+    cluster_birth[child[is_cluster] - root] = lambda_val[is_cluster]
+    max_lambda = np.zeros(n_clusters, dtype=np.float64)
+    direct = child_size == 1
+    np.maximum.at(max_lambda, parent[direct] - root, lambda_val[direct])
+    max_child_lambda = np.zeros(n_clusters, dtype=np.float64)
+    np.maximum.at(max_child_lambda, parent - root, lambda_val)
+    return TreeArrays(
+        root,
+        point_parent,
+        point_lambda,
+        cluster_parent,
+        cluster_birth,
+        max_lambda,
+        max_child_lambda,
+    )
+
+
+@numba.njit(parallel=True, cache=True)
+def weighted_positions(indices, weights, embedding):
+    """Weighted mean of the neighbours' embedding positions (NaN if no weight)."""
+    n, k = indices.shape
+    dim = embedding.shape[1]
+    result = np.full((n, dim), np.nan, dtype=np.float32)
+    for i in numba.prange(n):
+        total = 0.0
+        acc = np.zeros(dim, dtype=np.float64)
+        for j in range(k):
+            idx = indices[i, j]
+            if idx < 0 or weights[i, j] <= 0.0:
+                continue
+            total += weights[i, j]
+            for d in range(dim):
+                acc[d] += weights[i, j] * embedding[idx, d]
+        if total > 0.0:
+            for d in range(dim):
+                result[i, d] = acc[d] / total
+    return result
+
+
+@numba.njit(inline="always")
+def _xorshift(state):
+    state ^= (state << np.uint64(13)) & np.uint64(0xFFFFFFFFFFFFFFFF)
+    state ^= state >> np.uint64(7)
+    state ^= (state << np.uint64(17)) & np.uint64(0xFFFFFFFFFFFFFFFF)
+    return state
+
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def refine_positions(
+    positions,
+    indices,
+    weights,
+    embedding,
+    n_epochs,
+    initial_alpha,
+    noise_level,
+    negative_sample_rate,
+    seed,
+):
+    """SGD on the query positions only, with the training embedding fixed.
+
+    Uses the attractive and repulsive gradients of ``node_embedding_epoch``:
+    each epoch pulls a query towards each neighbour (scaled by the edge
+    weight) and pushes it away from ``negative_sample_rate`` random training
+    points per neighbour.
+    """
+    n, k = indices.shape
+    n_train = embedding.shape[0]
+    dim = embedding.shape[1]
+    for i in numba.prange(n):
+        if np.isnan(positions[i, 0]):
+            continue
+        current = positions[i]
+        state = np.uint64(seed) * np.uint64(0x9E3779B97F4A7C15) + np.uint64(i + 1)
+        n_neg = max(int(round(negative_sample_rate)), 0)
+        for epoch in range(n_epochs):
+            alpha = initial_alpha * (1.0 - epoch / n_epochs)
+            for j in range(k):
+                idx = indices[i, j]
+                if idx < 0 or weights[i, j] <= 0.0:
+                    continue
+                other = embedding[idx]
+                dist_squared = 0.0
+                for d in range(dim):
+                    diff = current[d] - other[d]
+                    dist_squared += diff * diff
+                if dist_squared > 0.0:
+                    dist = np.sqrt(dist_squared)
+                    grad_coeff = (-2.0 * noise_level * dist - 2.0) / (
+                        2.0 * dist_squared - 0.5 * dist + 1.0
+                    )
+                    for d in range(dim):
+                        current[d] += (
+                            weights[i, j] * grad_coeff * (current[d] - other[d]) * alpha
+                        )
+                for p in range(n_neg):
+                    state = _xorshift(state)
+                    other = embedding[np.int64(state % np.uint64(n_train))]
+                    dist_squared = 0.0
+                    for d in range(dim):
+                        diff = current[d] - other[d]
+                        dist_squared += diff * diff
+                    if dist_squared > 1e-2:
+                        grad_coeff = 4.0 / ((1.0 + 0.25 * dist_squared) * dist_squared)
+                        for d in range(dim):
+                            grad_d = grad_coeff * (current[d] - other[d])
+                            if grad_d > 4.0:
+                                grad_d = 4.0
+                            elif grad_d < -4.0:
+                                grad_d = -4.0
+                            current[d] += weights[i, j] * grad_d * alpha
+    return positions
+
+
+@numba.njit(parallel=True, cache=True)
+def nearest_mutual_reachability(neighbor_indices, neighbor_distances, core_query, core_train):
+    """The training point with the smallest mutual reachability distance to each
+    query, and lambda = 1 / that distance (-1 and 0 if there is none)."""
+    n, k = neighbor_indices.shape
+    nearest = np.full(n, -1, dtype=np.int64)
+    lambdas = np.zeros(n, dtype=np.float64)
+    for i in numba.prange(n):
+        best = np.inf
+        for j in range(k):
+            t = neighbor_indices[i, j]
+            if t < 0:
+                continue
+            mr = max(core_query[i], core_train[t], neighbor_distances[i, j])
+            if mr < best:
+                best = mr
+                nearest[i] = t
+        if nearest[i] >= 0:
+            lambdas[i] = np.inf if best <= 0.0 else 1.0 / best
+    return nearest, lambdas
+
+
+@numba.njit(parallel=True, cache=True)
+def place_in_tree(nearest, lambdas, root, point_parent, point_lambda, cluster_parent, cluster_birth):
+    """Attach each query to the condensed tree, as HDBSCAN's approximate_predict.
+
+    The query falls out of the tree no later than its nearest (by mutual
+    reachability) training point does, so its lambda is capped at that point's
+    lambda; it attaches to the deepest cluster on the path from that point's
+    cluster to the root that already exists at the query's lambda. Returns the
+    cluster (-1 if no neighbour) and the (capped) lambda.
+    """
+    n = nearest.shape[0]
+    attached = np.full(n, -1, dtype=np.int64)
+    capped = np.zeros(n, dtype=np.float64)
+    for i in numba.prange(n):
+        t = nearest[i]
+        if t < 0 or point_parent[t] < 0:
+            continue
+        lam = min(lambdas[i], point_lambda[t])
+        c = point_parent[t]
+        while c != root and cluster_birth[c - root] > lam:
+            c = cluster_parent[c - root]
+        attached[i] = c
+        capped[i] = lam
+    return attached, capped
+
+
+@numba.njit(parallel=True, cache=True)
+def layer_assignment(attached, lambdas, root, cluster_parent, max_lambda, selected_rank):
+    """Label and membership strength of attached queries in one layer.
+
+    Walks up from the attached cluster to the first selected cluster, whose
+    rank among the selected ids is the label, mirroring get_cluster_label_vector
+    and get_point_membership_strength_vector.
+    """
+    n = attached.shape[0]
+    labels = np.full(n, -1, dtype=np.int64)
+    strengths = np.zeros(n, dtype=np.float32)
+    for i in numba.prange(n):
+        c = attached[i]
+        if c < 0:
+            continue
+        while c != root and selected_rank[c - root] < 0:
+            c = cluster_parent[c - root]
+        if c == root:
+            continue
+        labels[i] = selected_rank[c - root]
+        m = max_lambda[c - root]
+        lam = lambdas[i]
+        if m == 0.0 or not np.isfinite(lam):
+            strengths[i] = 1.0
+        else:
+            strengths[i] = min(lam, m) / m
+    return labels, strengths
+
+
+def embedding_layer_labels(attached_by_tree, hierarchy, arrays_by_tree):
+    """Labels and strengths for every layer from per-tree attachments."""
+    labels, strengths = [], []
+    for layer, selected in enumerate(hierarchy.layer_clusters):
+        tree_index = hierarchy.layer_tree[layer]
+        arrays = arrays_by_tree[tree_index]
+        attached, lambdas = attached_by_tree[tree_index]
+        selected = np.asarray(selected, dtype=np.int64)
+        n = attached.shape[0]
+        if selected.shape[0] == 0:
+            labels.append(np.full(n, -1, dtype=np.int64))
+            strengths.append(np.zeros(n, dtype=np.float32))
+            continue
+        if selected.shape[0] == 1:
+            # get_single_cluster_label_vector: label 0 iff the point falls out
+            # at or after the densest point falling directly out of the cluster
+            c = selected[0] - arrays.root
+            lab = np.where(
+                (attached >= 0) & (lambdas >= arrays.max_child_lambda[c]), 0, -1
+            ).astype(np.int64)
+            m = arrays.max_lambda[c]
+            st = np.where(
+                lab >= 0,
+                np.where(
+                    (m == 0) | ~np.isfinite(lambdas),
+                    1.0,
+                    np.minimum(lambdas, m) / np.where(m == 0, 1.0, m),
+                ),
+                0.0,
+            ).astype(np.float32)
+            labels.append(lab)
+            strengths.append(st)
+            continue
+        selected_rank = np.full(arrays.cluster_parent.shape[0], -1, dtype=np.int64)
+        selected_rank[selected - arrays.root] = np.arange(selected.shape[0])
+        lab, st = layer_assignment(
+            attached,
+            lambdas,
+            arrays.root,
+            arrays.cluster_parent,
+            arrays.max_lambda,
+            selected_rank,
+        )
+        labels.append(lab)
+        strengths.append(st)
+    return labels, strengths
+
+
+def predict_from_positions(positions, pdata, embedding_tree, arrays_by_tree, exclude=None):
+    """Cluster labels for points at ``positions`` in the node embedding.
+
+    ``exclude``, if given, is a training index per row to leave out of the
+    neighbours (for predicting training points from their own positions).
+    """
+    hierarchy = pdata.hierarchy
+    min_samples = max(int(hierarchy.min_samples), 1)
+    n = positions.shape[0]
+    valid = ~np.isnan(positions[:, 0])
+    query_positions = np.ascontiguousarray(
+        np.where(valid[:, None], positions, 0.0), dtype=np.float32
+    )
+    n_train = pdata.embedding.shape[0]
+    k = min(2 * min_samples + (1 if exclude is not None else 0), n_train)
+    distances, indices = parallel_tree_query(
+        embedding_tree, query_positions, k=np.int64(k), output_rdist=False
+    )
+    indices = indices.astype(np.int64)
+    if exclude is not None:
+        drop = indices == np.asarray(exclude)[:, None]
+        keep_order = np.argsort(drop, axis=1, kind="stable")[:, : k - 1]
+        indices = np.take_along_axis(indices, keep_order, axis=1)
+        distances = np.take_along_axis(distances, keep_order, axis=1)
+    indices[~valid] = -1
+    if min_samples > 1:
+        core_query = distances[:, min(min_samples, indices.shape[1]) - 1].astype(
+            np.float64
+        )
+    else:
+        core_query = np.zeros(n, dtype=np.float64)
+    nearest, lambdas = nearest_mutual_reachability(
+        indices,
+        distances.astype(np.float64),
+        core_query,
+        pdata.core_distances.astype(np.float64),
+    )
+    attached_by_tree = [
+        place_in_tree(
+            nearest,
+            lambdas,
+            arrays.root,
+            arrays.point_parent,
+            arrays.point_lambda,
+            arrays.cluster_parent,
+            arrays.cluster_birth,
+        )
+        for arrays in arrays_by_tree
+    ]
+    return embedding_layer_labels(attached_by_tree, hierarchy, arrays_by_tree)
