@@ -70,7 +70,7 @@ def make_forest(
                 data,
                 n_trees,
                 leaf_size,
-                int(random_state.randint(0, 2**62)),
+                int(random_state.randint(0, 2**62, dtype=np.int64)),
                 angular=True,
                 max_depth=max_depth,
             )
@@ -82,7 +82,7 @@ def make_forest(
                 data,
                 n_trees,
                 leaf_size,
-                int(random_state.randint(0, 2**62)),
+                int(random_state.randint(0, 2**62, dtype=np.int64)),
                 angular=True,
                 max_depth=max_depth,
             )
