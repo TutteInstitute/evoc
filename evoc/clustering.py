@@ -247,6 +247,71 @@ def build_cluster_layers(
     return cluster_layers, membership_strength_layers, persistence_scores
 
 
+def cluster_embedding(
+    embedding,
+    *,
+    approx_n_clusters=None,
+    min_samples=5,
+    base_min_cluster_size=5,
+    base_n_clusters=None,
+    reproducible_flag=True,
+    min_similarity_threshold=0.2,
+    max_layers=10,
+    return_tree=False,
+):
+    """Cluster a node embedding into layers, as ``evoc_clusters`` does.
+
+    Returns ``(cluster_layers, membership_strengths, persistence_scores,
+    hierarchy, core_distances)``; the last two are None unless
+    ``return_tree`` is True.
+    """
+    n_threads = numba.get_num_threads()
+    hierarchy = None
+    core_distances = None
+    if approx_n_clusters is not None:
+        if return_tree:
+            cluster_vector, strengths, condensed_tree, leaves = (
+                binary_search_for_n_clusters(
+                    embedding,
+                    approx_n_clusters,
+                    n_threads,
+                    min_samples=min_samples,
+                    return_tree=True,
+                )
+            )
+            hierarchy = ClusterHierarchy(
+                condensed_trees=[condensed_tree],
+                layer_tree=[0],
+                layer_clusters=[as_cluster_ids(leaves)],
+                min_cluster_size=None,
+                min_samples=min_samples,
+                n_samples=embedding.shape[0],
+            )
+            core_distances = embedding_core_distances(embedding, min_samples)
+        else:
+            cluster_vector, strengths = binary_search_for_n_clusters(
+                embedding,
+                approx_n_clusters,
+                n_threads,
+                min_samples=min_samples,
+            )
+        return [cluster_vector], [strengths], [0.0], hierarchy, core_distances
+
+    layer_results = build_cluster_layers(
+        embedding,
+        min_samples=min_samples,
+        base_min_cluster_size=base_min_cluster_size,
+        base_n_clusters=base_n_clusters,
+        reproducible_flag=reproducible_flag,
+        min_similarity_threshold=min_similarity_threshold,
+        max_layers=max_layers,
+        return_tree=return_tree,
+    )
+    if return_tree:
+        return layer_results
+    return (*layer_results, None, None)
+
+
 def evoc_clusters(
     data,
     noise_level=0.5,
@@ -450,59 +515,23 @@ def evoc_clusters(
     if return_duplicates:
         duplicates = find_duplicates(nn_inds, nn_dists)
 
-    n_threads = numba.get_num_threads()
-
-    if approx_n_clusters is not None:
-        if prediction_data:
-            cluster_vector, strengths, condensed_tree, leaves = (
-                binary_search_for_n_clusters(
-                    embedding,
-                    approx_n_clusters,
-                    n_threads,
-                    min_samples=min_samples,
-                    return_tree=True,
-                )
-            )
-            hierarchy = ClusterHierarchy(
-                condensed_trees=[condensed_tree],
-                layer_tree=[0],
-                layer_clusters=[as_cluster_ids(leaves)],
-                min_cluster_size=None,
-                min_samples=min_samples,
-                n_samples=data.shape[0],
-            )
-            core_distances = embedding_core_distances(embedding, min_samples)
-        else:
-            cluster_vector, strengths = binary_search_for_n_clusters(
-                embedding,
-                approx_n_clusters,
-                n_threads,
-                min_samples=min_samples,
-            )
-        cluster_layers = [cluster_vector]
-        membership_strengths = [strengths]
-        persistence_scores = [0.0]
-    else:
-        layer_results = build_cluster_layers(
-            embedding,
-            min_samples=min_samples,
-            base_min_cluster_size=base_min_cluster_size,
-            base_n_clusters=base_n_clusters,
-            reproducible_flag=reproducible_flag,
-            min_similarity_threshold=min_similarity_threshold,
-            max_layers=max_layers,
-            return_tree=prediction_data,
-        )
-        if prediction_data:
-            (
-                cluster_layers,
-                membership_strengths,
-                persistence_scores,
-                hierarchy,
-                core_distances,
-            ) = layer_results
-        else:
-            cluster_layers, membership_strengths, persistence_scores = layer_results
+    (
+        cluster_layers,
+        membership_strengths,
+        persistence_scores,
+        hierarchy,
+        core_distances,
+    ) = cluster_embedding(
+        embedding,
+        approx_n_clusters=approx_n_clusters,
+        min_samples=min_samples,
+        base_min_cluster_size=base_min_cluster_size,
+        base_n_clusters=base_n_clusters,
+        reproducible_flag=reproducible_flag,
+        min_similarity_threshold=min_similarity_threshold,
+        max_layers=max_layers,
+        return_tree=prediction_data,
+    )
 
     result = [
         cluster_layers,
@@ -904,7 +933,12 @@ class EVoC(BaseEstimator, ClusterMixin):
 
     def _get_embedding_tree(self):
         if getattr(self, "_embedding_tree", None) is None:
-            self._embedding_tree = build_kdtree(self.prediction_data_.embedding)
+            pdata = self.prediction_data_
+            # The condensed trees cover the first hierarchy.n_samples points
+            n_tree = pdata.hierarchy.n_samples
+            self._embedding_tree = build_kdtree(
+                np.ascontiguousarray(pdata.embedding[:n_tree])
+            )
         return self._embedding_tree
 
     def _get_tree_arrays(self):
@@ -1171,3 +1205,261 @@ class EVoC(BaseEstimator, ClusterMixin):
         for name in self._PREDICTION_CACHES:
             state.pop(name, None)
         return state
+
+    # ---------------------------------------------------------------- update
+    def update(
+        self,
+        X_new,
+        *,
+        recluster=True,
+        relabel=True,
+        optimize="new",
+        n_epochs=None,
+        initial_alpha=None,
+        epsilon=0.2,
+        refresh_index=True,
+        random_state=None,
+    ):
+        """Add samples to a fitted model without refitting from scratch.
+
+        Requires a model fitted with ``prediction_data=True``. The k-NN graph
+        is extended incrementally and the fuzzy graph rebuilt. New samples
+        start in the node embedding at the weighted mean of their neighbours'
+        positions and are then optimised against the graph. Then, by default,
+        the embedding is re-clustered and each new layer is relabelled to
+        agree with the corresponding old layer, so that cluster ids stay
+        stable.
+
+        Parameters
+        ----------
+        X_new : array-like of shape (n_new, n_features)
+            New samples, of the same kind and number of features as the
+            training data. They are appended after the existing samples.
+
+        recluster : bool, default=True
+            Re-cluster the updated embedding. If False, the existing labels are
+            kept and the new samples are assigned with
+            ``predict(method="embedding")`` (the condensed trees then still
+            describe the original samples).
+
+        relabel : bool, default=True
+            Relabel re-clustered layers to keep cluster ids stable: each new
+            layer is matched to the old layer with the most similar number of
+            clusters, and its clusters to that layer's clusters by maximum
+            overlap on the existing samples. Clusters with no counterpart get
+            new ids above every existing id, so labels need not be contiguous.
+            The old layer each layer was matched to is recorded in
+            ``update_layer_matches_``. If False, layers are labelled as a fresh
+            fit would label them.
+
+        optimize : {"new", "all"}, default="new"
+            Which embedding positions to optimise when re-clustering. "new"
+            moves only the new samples (with the node embedding's gradients;
+            existing samples stay put), which keeps the clustering of existing
+            samples most stable. "all" re-optimises every position, starting
+            from the current embedding, which lets the embedding adapt to the
+            new samples but moves existing samples. On MNIST (adding 10k
+            samples to 60k) "new" agreed better with the previous layers than
+            either "all" or a refit, at the same agreement with the digit
+            labels.
+
+        n_epochs : int or None, default=None
+            Epochs of embedding optimisation. Defaults to the fitted
+            ``n_epochs`` for ``optimize="new"`` and to
+            ``max(10, round(0.4 * n_epochs))`` for ``optimize="all"``.
+
+        initial_alpha : float or None, default=None
+            Initial learning rate; defaults to 0.1 (as in fitting) for
+            ``optimize="new"`` and 0.01 for ``optimize="all"``, where lower
+            values move existing samples less.
+
+        epsilon : float, default=0.2
+            Accuracy/speed trade-off of the search for the new samples'
+            neighbours.
+
+        refresh_index : bool, default=True
+            Rebuild the search index for later predict/update calls now rather
+            than on first use.
+
+        random_state : int, RandomState instance or None, default=None
+            Randomness for this update; defaults to the model's
+            ``random_state``.
+
+        Returns
+        -------
+        labels : array of shape (n_new,)
+            Labels of the new samples in the ``labels_`` layer.
+        """
+        from .update import (
+            match_layers,
+            stable_relabel,
+            update_knn_graph,
+            warm_start_positions,
+        )
+
+        self._check_prediction_data()
+        pdata = self.prediction_data_
+        params = pdata.params
+        rng = check_random_state(
+            self.random_state if random_state is None else random_state
+        )
+        k = params["n_neighbors"]
+        n_old = pdata.data.shape[0]
+        if optimize not in ("new", "all"):
+            raise ValueError(f"optimize should be 'new' or 'all', not {optimize!r}")
+        if initial_alpha is None:
+            initial_alpha = 0.1 if optimize == "new" else 0.01
+
+        index = self._get_search_index()
+        q_inds, q_dists = index.query(X_new, min(k - 1, n_old), epsilon=epsilon)
+        new_data, new_inv_norms = prepare_data(np.asarray(X_new))
+        n_new = new_data.shape[0]
+        data_all, nn_inds, nn_dists = update_knn_graph(
+            pdata.data,
+            new_data,
+            self.nn_inds_,
+            self.nn_dists_,
+            q_inds,
+            q_dists,
+            pdata.input_dtype,
+            rng,
+        )
+        inv_norms = (
+            np.concatenate([pdata.inv_norms, new_inv_norms])
+            if pdata.inv_norms.shape[0]
+            else pdata.inv_norms
+        )
+        graph, sigmas, rhos = neighbor_graph_matrix(
+            params["neighbor_scale"] * k,
+            nn_inds,
+            nn_dists,
+            params["symmetrize_graph"],
+            return_bandwidths=True,
+        )
+        new_weights = membership_weights(
+            np.ascontiguousarray(nn_inds[n_old:, 1:], dtype=np.int32),
+            np.ascontiguousarray(nn_dists[n_old:, 1:], dtype=np.float32),
+            sigmas[n_old:],
+            rhos[n_old:],
+        )
+        initial = warm_start_positions(
+            pdata.embedding,
+            np.ascontiguousarray(nn_inds[n_old:, 1:]),
+            new_weights,
+            n_old,
+            rng,
+        )
+
+        old_layers = self.cluster_layers_
+        old_strengths = self.membership_strength_layers_
+        if recluster:
+            if optimize == "new":
+                # Only the new samples move; existing positions are kept
+                embedding = np.ascontiguousarray(initial, dtype=np.float32)
+                if n_epochs is None:
+                    n_epochs = params["n_epochs"]
+                refine_positions(
+                    embedding[n_old:],
+                    np.ascontiguousarray(nn_inds[n_old:, 1:], dtype=np.int32),
+                    new_weights,
+                    embedding,
+                    int(n_epochs),
+                    float(initial_alpha),
+                    float(params["noise_level"]),
+                    1.0,
+                    np.uint64(rng.randint(0, np.iinfo(np.int32).max)),
+                )
+            else:
+                if n_epochs is None:
+                    n_epochs = max(10, int(round(0.4 * params["n_epochs"])))
+                embedding = node_embedding(
+                    graph,
+                    n_components=params["n_components"],
+                    n_epochs=n_epochs,
+                    initial_embedding=initial,
+                    negative_sample_rate=1.0,
+                    noise_level=params["noise_level"],
+                    random_state=rng,
+                    verbose=False,
+                    reproducible_flag=params["reproducible_flag"],
+                    initial_alpha=initial_alpha,
+                )
+            layers, strengths, persistence, hierarchy, core_distances = (
+                cluster_embedding(
+                    embedding,
+                    approx_n_clusters=params["approx_n_clusters"],
+                    min_samples=params["min_samples"],
+                    base_min_cluster_size=params["base_min_cluster_size"],
+                    base_n_clusters=params["base_n_clusters"],
+                    reproducible_flag=params["reproducible_flag"],
+                    min_similarity_threshold=params["min_similarity_threshold"],
+                    max_layers=params["max_layers"],
+                    return_tree=True,
+                )
+            )
+            if relabel:
+                matches = match_layers(old_layers, layers, n_old)
+                layer_labels = []
+                for i, match in enumerate(matches):
+                    layers[i], mapping = stable_relabel(old_layers[match], layers[i])
+                    layer_labels.append(mapping)
+                hierarchy = hierarchy._replace(layer_labels=layer_labels)
+            self.update_layer_matches_ = matches if relabel else None
+        else:
+            # Keep the existing samples' positions and labels; place the new
+            # samples by refining their positions against the fixed embedding
+            new_positions = refine_positions(
+                np.ascontiguousarray(initial[n_old:]),
+                np.ascontiguousarray(nn_inds[n_old:, 1:], dtype=np.int32),
+                new_weights,
+                np.ascontiguousarray(initial),
+                10,
+                0.1,
+                float(params["noise_level"]),
+                1.0,
+                np.uint64(rng.randint(0, np.iinfo(np.int32).max)),
+            )
+            embedding = np.vstack([pdata.embedding, new_positions]).astype(
+                np.float32
+            )
+            new_labels, new_strengths = predict_from_positions(
+                new_positions,
+                pdata,
+                self._get_embedding_tree(),
+                self._get_tree_arrays(),
+            )
+            layers = [
+                np.concatenate([old, new.astype(old.dtype)])
+                for old, new in zip(old_layers, new_labels)
+            ]
+            strengths = [
+                np.concatenate([old, new.astype(old.dtype)])
+                for old, new in zip(old_strengths, new_strengths)
+            ]
+            persistence = self.persistence_scores_
+            hierarchy = pdata.hierarchy
+            core_distances = pdata.core_distances
+            self.update_layer_matches_ = None
+
+        self.nn_inds_ = nn_inds
+        self.nn_dists_ = nn_dists
+        self.duplicates_ = find_duplicates(nn_inds, nn_dists)
+        self.cluster_layers_ = layers
+        self.membership_strength_layers_ = strengths
+        self.persistence_scores_ = persistence
+        self._select_labels()
+        self.prediction_data_ = pdata._replace(
+            data=data_all,
+            inv_norms=inv_norms,
+            sigmas=sigmas,
+            rhos=rhos,
+            mean_knn_distance=float(np.mean(nn_dists.astype(np.float32))),
+            embedding=np.ascontiguousarray(embedding, dtype=np.float32),
+            hierarchy=hierarchy,
+            core_distances=core_distances,
+        )
+        self._clear_prediction_caches()
+        if refresh_index:
+            self._get_search_index()
+        return self.labels_[n_old:]
+

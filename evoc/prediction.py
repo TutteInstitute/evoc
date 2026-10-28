@@ -21,7 +21,12 @@ ClusterHierarchy = namedtuple(
         "min_cluster_size",
         "min_samples",
         "n_samples",
+        # list per layer of int64 arrays aligned with layer_clusters: the label
+        # of each selected cluster. None means labels are the ranks (as after
+        # fit); EVoC.update relabels layers to keep cluster ids stable.
+        "layer_labels",
     ],
+    defaults=(None,),
 )
 ClusterHierarchy.__doc__ = """The condensed trees behind a model's cluster layers.
 
@@ -62,6 +67,14 @@ def as_cluster_ids(clusters):
     return np.sort(np.asarray(clusters, dtype=np.int64))
 
 
+def layer_label_map(hierarchy, layer):
+    """Label of each selected cluster of a layer (in sorted cluster id order)."""
+    n_clusters = len(hierarchy.layer_clusters[layer])
+    if hierarchy.layer_labels is None or hierarchy.layer_labels[layer] is None:
+        return np.arange(n_clusters, dtype=np.int64)
+    return np.asarray(hierarchy.layer_labels[layer], dtype=np.int64)
+
+
 def labels_from_hierarchy(hierarchy, layer):
     """Labels and membership strengths of a layer, re-derived from the tree.
 
@@ -72,7 +85,12 @@ def labels_from_hierarchy(hierarchy, layer):
     if len(clusters) == 0 or len(tree.parent) == 0:
         n = hierarchy.n_samples
         return np.full(n, -1, dtype=np.intp), np.zeros(n, dtype=np.float32)
-    return extract_clusters_by_id(tree, np.asarray(clusters, dtype=np.int64))
+    ranks, strengths = extract_clusters_by_id(
+        tree, np.asarray(clusters, dtype=np.int64)
+    )
+    label_map = layer_label_map(hierarchy, layer)
+    labels = np.where(ranks >= 0, label_map[np.maximum(ranks, 0)], -1)
+    return labels.astype(np.intp), strengths
 
 
 def embedding_core_distances(embedding, min_samples, tree=None):
@@ -463,12 +481,15 @@ def embedding_layer_labels(attached_by_tree, hierarchy, arrays_by_tree):
             labels.append(np.full(n, -1, dtype=np.int64))
             strengths.append(np.zeros(n, dtype=np.float32))
             continue
+        label_map = layer_label_map(hierarchy, layer)
         if selected.shape[0] == 1:
             # get_single_cluster_label_vector: label 0 iff the point falls out
             # at or after the densest point falling directly out of the cluster
             c = selected[0] - arrays.root
             lab = np.where(
-                (attached >= 0) & (lambdas >= arrays.max_child_lambda[c]), 0, -1
+                (attached >= 0) & (lambdas >= arrays.max_child_lambda[c]),
+                label_map[0],
+                -1,
             ).astype(np.int64)
             m = arrays.max_lambda[c]
             st = np.where(
@@ -484,7 +505,7 @@ def embedding_layer_labels(attached_by_tree, hierarchy, arrays_by_tree):
             strengths.append(st)
             continue
         selected_rank = np.full(arrays.cluster_parent.shape[0], -1, dtype=np.int64)
-        selected_rank[selected - arrays.root] = np.arange(selected.shape[0])
+        selected_rank[selected - arrays.root] = label_map
         lab, st = layer_assignment(
             attached,
             lambdas,
@@ -511,7 +532,8 @@ def predict_from_positions(positions, pdata, embedding_tree, arrays_by_tree, exc
     query_positions = np.ascontiguousarray(
         np.where(valid[:, None], positions, 0.0), dtype=np.float32
     )
-    n_train = pdata.embedding.shape[0]
+    # The trees cover the first hierarchy.n_samples points of the embedding
+    n_train = hierarchy.n_samples
     k = min(2 * min_samples + (1 if exclude is not None else 0), n_train)
     distances, indices = parallel_tree_query(
         embedding_tree, query_positions, k=np.int64(k), output_rdist=False

@@ -369,15 +369,17 @@ def _build_cluster_tree(labels):
                 labels[lower_layer][upper_cluster_order],
                 np.cumsum(np.bincount(labels[upper_layer] + 1))[:-1],
             )
-            for i, label in enumerate(upper_layer_unique_labels):
+            for label in upper_layer_unique_labels:
                 if label >= 0:
-                    for child in cluster_groups[i]:
+                    # Groups are indexed by label + 1 (labels need not be
+                    # contiguous, e.g. after EVoC.update)
+                    for child in cluster_groups[label + 1]:
                         if child >= 0 and child not in found[lower_layer]:
                             mapping.append((upper_layer, label, lower_layer, child))
                             found[lower_layer].add(child)
 
     for lower_layer in range(len(labels) - 1, -1, -1):
-        for child in range(labels[lower_layer].max() + 1):
+        for child in np.unique(labels[lower_layer]):
             if child >= 0 and child not in found[lower_layer]:
                 mapping.append((len(labels), 0, lower_layer, child))
 

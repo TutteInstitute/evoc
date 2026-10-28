@@ -161,3 +161,97 @@ def update_knn_graph(
     out_inds[:, 1:] = indices
     out_dists[:, 1:] = distances
     return data_all, out_inds, out_dists
+
+
+def warm_start_positions(old_embedding, new_inds, new_weights, n_old, random_state):
+    """Initial embedding positions for new samples.
+
+    Each new sample starts at the weighted mean of its already placed
+    neighbours' positions (old samples first, then new samples placed in
+    earlier passes); samples with no placed neighbour start near the mean of
+    the embedding.
+    """
+    from .prediction import weighted_positions
+
+    n_new = new_inds.shape[0]
+    dim = old_embedding.shape[1]
+    positions = np.full((n_old + n_new, dim), np.nan, dtype=np.float32)
+    positions[:n_old] = old_embedding
+    pending = np.arange(n_new)
+    for _ in range(3):
+        if pending.shape[0] == 0:
+            break
+        inds = new_inds[pending]
+        placed = np.zeros(inds.shape, dtype=bool)
+        valid = inds >= 0
+        placed[valid] = ~np.isnan(positions[inds[valid], 0])
+        weights = np.where(placed, new_weights[pending], 0.0).astype(np.float32)
+        new_positions = weighted_positions(
+            np.where(placed, inds, -1).astype(np.int32), weights, positions
+        )
+        positions[n_old + pending] = new_positions
+        pending = pending[np.isnan(new_positions[:, 0])]
+    if pending.shape[0] > 0:
+        scale = 0.1 * old_embedding.std(axis=0)
+        positions[n_old + pending] = old_embedding.mean(axis=0) + scale * (
+            random_state.normal(size=(pending.shape[0], dim))
+        )
+    return positions
+
+
+def match_layers(old_layers, new_layers, n_old):
+    """For each new layer, the old layer it corresponds to.
+
+    The old layer with the most similar number of clusters (on a log scale) is
+    chosen, with ties broken by the adjusted Rand index on the old samples.
+    """
+    old_counts = np.array([len(np.unique(l[l >= 0])) for l in old_layers])
+    matches = []
+    for new_labels in new_layers:
+        count = len(np.unique(new_labels[new_labels >= 0]))
+        gaps = np.abs(np.log1p(old_counts) - np.log1p(count))
+        candidates = np.flatnonzero(np.isclose(gaps, gaps.min()))
+        if candidates.shape[0] > 1:
+            scores = [
+                adjusted_rand_score(old_layers[c], new_labels[:n_old])
+                for c in candidates
+            ]
+            matches.append(int(candidates[int(np.argmax(scores))]))
+        else:
+            matches.append(int(candidates[0]))
+    return matches
+
+
+def stable_relabel(old_labels, new_labels):
+    """Relabel ``new_labels`` to agree with ``old_labels`` on the old samples.
+
+    New clusters are matched to old clusters by maximum overlap (Hungarian
+    assignment on the contingency table of the old samples, noise excluded) and
+    take the matched cluster's label; unmatched new clusters get fresh labels
+    above every old label. Returns the relabelled labels and the label for each
+    original new label.
+    """
+    n_old = old_labels.shape[0]
+    n_new_clusters = int(new_labels.max()) + 1 if new_labels.shape[0] else 0
+    mapping = np.full(max(n_new_clusters, 0), -1, dtype=np.int64)
+    if n_new_clusters == 0:
+        return new_labels.copy(), mapping
+    old_part = new_labels[:n_old]
+    both = (old_labels >= 0) & (old_part >= 0)
+    old_ids = np.unique(old_labels[old_labels >= 0])
+    if old_ids.shape[0] > 0 and np.any(both):
+        old_pos = np.searchsorted(old_ids, old_labels[both])
+        table = np.zeros((n_new_clusters, old_ids.shape[0]), dtype=np.int64)
+        np.add.at(table, (old_part[both], old_pos), 1)
+        rows, cols = linear_sum_assignment(-table)
+        for r, c in zip(rows, cols):
+            if table[r, c] > 0:
+                mapping[r] = old_ids[c]
+    next_label = int(old_labels.max()) + 1 if old_labels.shape[0] else 0
+    next_label = max(next_label, 0)
+    for r in range(n_new_clusters):
+        if mapping[r] < 0:
+            mapping[r] = next_label
+            next_label += 1
+    relabelled = np.where(new_labels >= 0, mapping[np.maximum(new_labels, 0)], -1)
+    return relabelled.astype(new_labels.dtype), mapping
