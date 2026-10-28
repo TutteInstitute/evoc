@@ -8,7 +8,7 @@ from sklearn.metrics import adjusted_rand_score
 
 from .common_nndescent import flagged_heap_push, make_heap
 from .knn_graph import knn_graph, nn_descent
-from .search.kernels import output_to_internal, pair_distances
+from .search.kernels import distance_to, output_to_internal
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -54,15 +54,40 @@ def _remap_rows(indices, distances, old_to_new):
     )
 
 
-def _two_hop_candidates(rows, affected):
-    """Neighbours of neighbours of each affected row (-1 padded, no repeats)."""
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def _offer_two_hop(heap_indices, heap_distances, heap_flags, rows, affected, data, inv_norms):
+    """Offer each affected row its neighbours' neighbours.
+
+    ``rows`` are the (renumbered) neighbour rows; candidates go into the
+    affected row's own heap only, so rows can be processed in parallel.
+    Distances are converted to internal units; candidates with no similarity
+    at all are skipped.
+    """
     k = rows.shape[1]
-    hop = rows[np.maximum(rows[affected], 0)].reshape(affected.shape[0], k * k)
-    hop[np.repeat(rows[affected] < 0, k, axis=1)] = -1
-    hop[hop == affected[:, None]] = -1
-    hop = np.sort(hop, axis=1)
-    hop[:, 1:][hop[:, 1:] == hop[:, :-1]] = -1
-    return np.ascontiguousarray(hop, dtype=np.int32)
+    for r in numba.prange(affected.shape[0]):
+        a = affected[r]
+        if inv_norms.shape[0] > 0:
+            inv_a = inv_norms[a]
+        else:
+            inv_a = np.float32(1.0)
+        for j in range(k):
+            b = rows[a, j]
+            if b < 0:
+                continue
+            for t in range(k):
+                c = rows[b, t]
+                if c < 0 or c == a:
+                    continue
+                d = distance_to(data[a], inv_a, data, inv_norms, c)
+                if not np.isfinite(d):
+                    continue
+                flagged_heap_push(
+                    heap_distances[a],
+                    heap_indices[a],
+                    heap_flags[a],
+                    np.float32(-np.exp2(-d)),
+                    c,
+                )
 
 
 def _rows_to_heap(indices, internal, flag):
@@ -168,22 +193,8 @@ def update_knn_graph(
             inv_norms = int8_inverse_norms(data_all)
         elif inv_norms is None:
             inv_norms = np.zeros(0, dtype=np.float32)
-        candidates = _two_hop_candidates(old_rows, affected)
-        sources = np.repeat(affected, candidates.shape[1]).astype(np.int32)
-        flat = candidates.ravel()
-        valid = flat >= 0
-        candidate_dists = np.full(flat.shape[0], np.inf, dtype=np.float32)
-        candidate_dists[valid] = output_to_internal(
-            pair_distances(data_all, inv_norms, sources[valid], flat[valid]),
-            input_dtype,
-        )
-        _offer_edges(
-            heap[0],
-            heap[1],
-            heap[2],
-            affected,
-            candidates,
-            np.ascontiguousarray(candidate_dists.reshape(candidates.shape)),
+        _offer_two_hop(
+            heap[0], heap[1], heap[2], old_rows, affected, data_all, inv_norms
         )
 
     # Offer each new point to the old points it found; accepted edges are

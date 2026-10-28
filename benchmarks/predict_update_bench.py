@@ -12,7 +12,9 @@ the 10,000 test rows, and prints markdown tables:
   timings;
 * update: k-NN recall of the updated graph against a from-scratch graph, cost
   per stage for 100 / 1,000 / 10,000 new rows, label stability on the existing
-  rows (against a refit), agreement with refits, and embedding drift.
+  rows (against a refit), agreement with refits, and embedding drift;
+* moving window: fit on rows 0-60k of train+test, then twice expire the oldest
+  5k rows and add the next 5k, comparing each step with refitting the window.
 
 Layers of different fits are paired by closest number of clusters.
 
@@ -20,7 +22,7 @@ Usage::
 
     python benchmarks/predict_update_bench.py \\
         [--datasets mnist fashion mnist-uint8 mnist-int8] [--seeds 3] \\
-        [--data-dir ~/.cache/evoc_bench] [--skip search predict update]
+        [--data-dir ~/.cache/evoc_bench] [--skip search predict update window]
 """
 import argparse
 import gzip
@@ -405,6 +407,51 @@ def bench_update(name, X, y, Q, yq, seeds):
     return cost_rows, knn_row, stability_rows, [name, f"{refit_time:.2f}"]
 
 
+# ----------------------------------------------------------------- moving window
+def bench_window(name, X, y, Q, yq, window=60_000, step=5_000, n_steps=2):
+    full = np.vstack([X, Q])
+    y_full = np.concatenate([y, yq])
+    model = EVoC(random_state=0, prediction_data=True).fit(full[:window])
+    model.prepare_prediction()
+    warm = pickle.loads(pickle.dumps(model))
+    warm.update(full[window : window + 200], X_expired=np.arange(200), refresh_index=False)
+    previous_refit = EVoC(random_state=100).fit(full[:window])
+    rows = []
+    for i in range(n_steps):
+        start, stop = (i + 1) * step, window + (i + 1) * step
+        before = dict(zip(model.sample_ids_, model.labels_))
+        t = time.perf_counter()
+        model.update(full[stop - step : stop], X_expired=np.arange(step))
+        elapsed = time.perf_counter() - t
+        t = time.perf_counter()
+        refit = EVoC(random_state=101 + i).fit(full[start:stop])
+        refit_time = time.perf_counter() - t
+
+        shared = model.sample_ids_[: window - step]
+        old = np.array([before[s] for s in shared])
+        refit_old = previous_refit.labels_[step:]
+        rng = np.random.RandomState(i)
+        sample = rng.choice(window, 1000, replace=False)
+        kth = brute_force_kth(full[start:stop], full[start:stop][sample], 15)
+        _, scratch_dists = knn_graph(full[start:stop], n_neighbors=15, random_state=0)
+        rows.append(
+            [
+                name,
+                i + 1,
+                f"{elapsed:.2f}",
+                f"{refit_time:.2f}",
+                f"{tie_aware_recall(model.nn_dists_[sample], kth):.4f}",
+                f"{tie_aware_recall(scratch_dists[sample], kth):.4f}",
+                f"{adjusted_rand_score(old, model.labels_[: window - step]):.3f}",
+                f"{adjusted_rand_score(refit_old, refit.labels_[: window - step]):.3f}",
+                f"{adjusted_rand_score(y_full[start:stop], model.labels_):.3f}",
+                f"{adjusted_rand_score(y_full[start:stop], refit.labels_):.3f}",
+            ]
+        )
+        previous_refit = refit
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -413,13 +460,17 @@ def main():
     parser.add_argument("--seeds", type=int, default=3)
     parser.add_argument("--data-dir", default="~/.cache/evoc_bench")
     parser.add_argument(
-        "--skip", nargs="*", default=[], choices=["search", "predict", "update"]
+        "--skip",
+        nargs="*",
+        default=[],
+        choices=["search", "predict", "update", "window"],
     )
     args = parser.parse_args()
 
     print(f"numba threads: {numba.get_num_threads()}, seeds: {args.seeds}", flush=True)
     search_rows, predict_rows, predict_info = [], [], []
     cost_rows, knn_rows, stability_rows, refit_times = [], [], [], []
+    window_rows = []
     for name in args.datasets:
         X, y, Q, yq = load(name, args.data_dir)
         print(f"{name}: train {X.shape} {X.dtype}, test {Q.shape}", flush=True)
@@ -435,6 +486,8 @@ def main():
             knn_rows.append(knn_row)
             stability_rows += stability
             refit_times.append(refit_time)
+        if "window" not in args.skip:
+            window_rows += bench_window(name, X, y, Q, yq)
 
     if search_rows:
         table(
@@ -476,6 +529,17 @@ def main():
             stability_rows,
         )
 
+    if window_rows:
+        table(
+            "Moving window (60k rows; each step expires the oldest 5k and adds 5k): update vs refitting the window",
+            [
+                "data", "step", "update (s)", "refit (s)",
+                "k-NN recall: updated", "k-NN recall: scratch",
+                "stability: update", "stability: refit",
+                "vs truth: update", "vs truth: refit",
+            ],
+            window_rows,
+        )
 
 if __name__ == "__main__":
     main()
