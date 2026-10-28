@@ -33,8 +33,14 @@ from .graph_construction import neighbor_graph_matrix
 from .prediction import (
     ClusterHierarchy,
     PredictionData,
+    apply_thresholds,
     as_cluster_ids,
+    calibrate_vote_thresholds,
     embedding_core_distances,
+    membership_weights,
+    query_bandwidths,
+    stack_layers,
+    vote_scores,
 )
 from .search.kernels import prepare_data
 
@@ -887,7 +893,177 @@ class EVoC(BaseEstimator, ClusterMixin):
         """
         self._check_prediction_data()
         self._get_search_index()
+        self._get_vote_thresholds()
         return self
+
+    def _cache(self):
+        if getattr(self, "_prediction_cache", None) is None:
+            self._prediction_cache = {}
+        return self._prediction_cache
+
+    def _labels_layer(self):
+        if len(self.cluster_layers_) == 1:
+            return 0
+        return int(np.argmax(self.persistence_scores_))
+
+    def _get_vote_thresholds(self):
+        cache = self._cache()
+        if "vote_thresholds" not in cache:
+            thresholds, _ = calibrate_vote_thresholds(
+                self.nn_inds_,
+                self.nn_dists_,
+                self.prediction_data_,
+                self.cluster_layers_,
+                self.membership_strength_layers_,
+            )
+            cache["vote_thresholds"] = thresholds
+        return cache["vote_thresholds"]
+
+    def _get_stacked_layers(self):
+        cache = self._cache()
+        if "stacked_layers" not in cache:
+            cache["stacked_layers"] = stack_layers(
+                self.cluster_layers_, self.membership_strength_layers_
+            )
+        return cache["stacked_layers"]
+
+    def _query_neighbors(self, X, k, epsilon):
+        """Training-set neighbours of X: (indices, distances), self excluded."""
+        if k is None:
+            k = self.prediction_data_.params["n_neighbors"]
+        k = int(k)
+        if k < 2:
+            raise ValueError("k must be at least 2")
+        index = self._get_search_index()
+        return index.query(X, min(k - 1, index.n_samples), epsilon=epsilon)
+
+    def _resolve_thresholds(self, noise_threshold, n_layers):
+        if noise_threshold is None:
+            return self._get_vote_thresholds()
+        thresholds = np.asarray(noise_threshold, dtype=np.float32)
+        if thresholds.ndim == 0:
+            return np.full(n_layers, thresholds, dtype=np.float32)
+        if thresholds.shape != (n_layers,):
+            raise ValueError(
+                "noise_threshold must be a float or have one value per layer"
+            )
+        return thresholds
+
+    def predict_layers(
+        self, X, *, method="vote", k=None, epsilon=0.1, noise_threshold=None
+    ):
+        """Assign new samples to clusters in every cluster layer.
+
+        Requires a model fitted with ``prediction_data=True``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            New samples, of the same kind (float, int8 or bit-packed uint8) and
+            number of features as the training data.
+
+        method : {"vote", "embedding"}, default="vote"
+            ``"vote"`` assigns each sample to the cluster with the most
+            (edge-weight times membership-strength) support among its nearest
+            training samples, using the same edge weights as the fuzzy k-NN
+            graph built during fitting. ``"embedding"`` places each sample in
+            the node embedding and then in the condensed cluster tree, like
+            HDBSCAN's ``approximate_predict``.
+
+        k : int or None, default=None
+            Number of neighbours (counting the sample itself, as in
+            ``n_neighbors``) used to place each sample. Defaults to the fitted
+            ``n_neighbors``.
+
+        epsilon : float, default=0.1
+            Accuracy/speed trade-off of the nearest-neighbour search.
+
+        noise_threshold : float, array of floats or None, default=None
+            ``"vote"`` only. Samples whose winning score (as a fraction of the
+            total edge weight) is below the threshold are labelled noise
+            (-1). By default each layer uses a threshold calibrated so that
+            predicting the training samples from their neighbours reproduces
+            the layer's training noise fraction.
+
+        Returns
+        -------
+        labels : list of arrays of shape (n_samples,)
+            Labels for each layer, aligned with ``cluster_layers_``.
+
+        strengths : list of arrays of shape (n_samples,)
+            Membership strengths in [0, 1] for each layer (0 for noise).
+        """
+        self._check_prediction_data()
+        if method == "vote":
+            labels, strengths = self._predict_vote(X, k, epsilon, noise_threshold)
+        elif method == "embedding":
+            labels, strengths = self._predict_embedding(X, k, epsilon)
+        else:
+            raise ValueError(
+                f"method should be 'vote' or 'embedding', not {method!r}"
+            )
+        return [l for l in labels], [s for s in strengths]
+
+    def predict(
+        self,
+        X,
+        *,
+        method="vote",
+        layer=None,
+        k=None,
+        epsilon=0.1,
+        noise_threshold=None,
+        return_strengths=False,
+    ):
+        """Assign new samples to clusters without refitting.
+
+        Requires a model fitted with ``prediction_data=True``. See
+        :meth:`predict_layers` for the parameters.
+
+        Parameters
+        ----------
+        layer : int or None, default=None
+            The cluster layer to predict; None gives the layer used for
+            ``labels_``.
+
+        return_strengths : bool, default=False
+            Also return membership strengths.
+
+        Returns
+        -------
+        labels : array of shape (n_samples,)
+            Cluster labels, -1 for noise.
+
+        strengths : array of shape (n_samples,)
+            Only if ``return_strengths`` is True.
+        """
+        self._check_prediction_data()
+        if layer is None:
+            layer = self._labels_layer()
+        n_layers = len(self.cluster_layers_)
+        if not -n_layers <= layer < n_layers:
+            raise ValueError(f"layer must be in [0, {n_layers}), got {layer}")
+        labels, strengths = self.predict_layers(
+            X, method=method, k=k, epsilon=epsilon, noise_threshold=noise_threshold
+        )
+        if return_strengths:
+            return labels[layer], strengths[layer]
+        return labels[layer]
+
+    def _predict_vote(self, X, k, epsilon, noise_threshold):
+        pdata = self.prediction_data_
+        indices, distances = self._query_neighbors(X, k, epsilon)
+        sigmas, rhos = query_bandwidths(distances, pdata)
+        weights = membership_weights(indices, distances, sigmas, rhos)
+        layer_labels, layer_strengths = self._get_stacked_layers()
+        best_labels, best_scores = vote_scores(
+            indices, weights, layer_labels, layer_strengths
+        )
+        thresholds = self._resolve_thresholds(noise_threshold, layer_labels.shape[0])
+        return apply_thresholds(best_labels, best_scores, thresholds)
+
+    def _predict_embedding(self, X, k, epsilon):
+        raise NotImplementedError
 
     def _get_search_index(self):
         if getattr(self, "_search_index", None) is None:
