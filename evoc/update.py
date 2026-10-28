@@ -499,6 +499,11 @@ def resolve_expired(X_expired, data, search_index, n_candidates=16):
         found = np.sort(candidates[i][candidates[i] >= 0])
         found = found[keep[found]]
         hits = found[matches(row, found)] if found.shape[0] else found
+        if hits.shape[0] > 0:
+            earlier = np.flatnonzero(keep[:hits[0]])
+            earlier_hits = earlier[matches(row, earlier)]
+            if earlier_hits.shape[0] > 0:
+                hits = earlier_hits
         if hits.shape[0] == 0:
             # Fall back to scanning every remaining row
             remaining = np.flatnonzero(keep)
