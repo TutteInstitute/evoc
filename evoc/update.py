@@ -292,7 +292,14 @@ def update_knn_graph(
             heap[1],
             heap[2],
             new_ids,
-            np.ascontiguousarray(new_new_inds[:, 1:] + n_old, dtype=np.int32),
+            np.ascontiguousarray(
+                np.where(
+                    new_new_inds[:, 1:] >= 0,
+                    new_new_inds[:, 1:] + n_old,
+                    -1,
+                ),
+                dtype=np.int32,
+            ),
             np.ascontiguousarray(new_new_internal),
         )
 
