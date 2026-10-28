@@ -449,10 +449,10 @@ def evoc_clusters(
         initializing the node embedding.
 
     prediction_data : bool, default=False
-        If True, also return a :class:`evoc.prediction.PredictionData` record
-        holding what ``EVoC.predict`` and ``EVoC.update`` need (the prepared
-        training data, k-NN bandwidths, node embedding, condensed trees and
-        core distances). Clustering results are unaffected.
+        Whether to also return the extra information (a
+        :class:`evoc.prediction.PredictionData`) needed to assign new data to
+        clusters and to update the clustering. Clustering results are the same
+        either way.
 
     Returns
     -------
@@ -687,12 +687,11 @@ class EVoC(BaseEstimator, ClusterMixin):
         is set to 'label_prop'.
 
     prediction_data : bool, default=False
-        Whether to keep the state needed by :meth:`predict`,
-        :meth:`predict_layers` and :meth:`update` (see ``prediction_data_``).
-        This keeps a copy of the training data (as float32 for float input),
-        the node embedding and the condensed trees, so it costs memory roughly
-        the size of the training data plus ``n_samples * (n_components + 4)``
-        floats. Clustering results are the same either way.
+        Whether to keep the extra information needed to assign new data to
+        clusters with ``predict`` and to update the model with ``update``. This
+        keeps a copy of the training data, the node embedding, and the cluster
+        trees, so it uses roughly as much extra memory as the training data. The
+        clustering results are the same either way.
 
     Attributes
     ----------
@@ -729,15 +728,20 @@ class EVoC(BaseEstimator, ClusterMixin):
     duplicates_ : set of tuple of int
         A set of pairs of indices of potential duplicate points in the data.
 
-    sample_ids_ : array of shape (n_samples,)
-        A stable integer id for each sample: fitting numbers the samples from 0,
-        and :meth:`update` gives new samples the next ids and drops the ids of
-        expired samples, so ids identify samples across updates.
+    sample_ids_ : array-like of shape (n_samples,)
+        An id for each sample that stays the same across updates. Fitting
+        numbers the samples from 0, and ``update`` gives new samples the next ids
+        and removes the ids of expired samples.
 
     prediction_data_ : PredictionData
-        Only if ``prediction_data=True``: the prepared training data, k-NN
-        bandwidths, node embedding (``prediction_data_.embedding``), condensed
-        trees and core distances used by :meth:`predict` and :meth:`update`.
+        Only available if ``prediction_data=True``. The information used by
+        ``predict`` and ``update``, including the node embedding
+        (``prediction_data_.embedding``).
+
+    update_layer_matches_ : list of int
+        Only available after ``update``. For each cluster layer, the index of the
+        layer before the update that it was matched to (None if the layers were
+        not relabeled).
     """
 
     def __init__(
@@ -939,16 +943,18 @@ class EVoC(BaseEstimator, ClusterMixin):
             )
 
     def prepare_prediction(self):
-        """Build the structures used by :meth:`predict` and :meth:`update` now.
+        """Build the structures needed to predict and update ahead of time.
 
-        They are otherwise built on first use: a nearest-neighbour search
-        index over the training data, a kd-tree over the node embedding, and
-        per-layer calibration for ``method="vote"``. They are not pickled, and
-        are rebuilt on first use after unpickling.
+        These (a nearest neighbor search index, a search tree over the node
+        embedding, and noise thresholds for ``method="vote"``) are otherwise built
+        the first time they are needed. They are not saved when the model is
+        pickled, and are rebuilt when next needed.
 
         Returns
         -------
+
         self : EVoC
+            Returns the instance itself.
         """
         self._check_prediction_data()
         self._get_search_index()
@@ -1040,54 +1046,55 @@ class EVoC(BaseEstimator, ClusterMixin):
         noise_threshold=None,
         refine_epochs=10,
     ):
-        """Assign new samples to clusters in every cluster layer.
+        """Assign new data to clusters in every cluster layer.
 
-        Requires a model fitted with ``prediction_data=True``.
+        The model must have been fitted with ``prediction_data=True``.
 
         Parameters
         ----------
+
         X : array-like of shape (n_samples, n_features)
-            New samples, of the same kind (float, int8 or bit-packed uint8) and
-            number of features as the training data.
+            The new data. It must be the same kind of data as the training data
+            (float, int8 or uint8) with the same number of features.
 
         method : {"vote", "embedding"}, default="vote"
-            ``"vote"`` assigns each sample to the cluster with the most
-            (edge-weight times membership-strength) support among its nearest
-            training samples, using the same edge weights as the fuzzy k-NN
-            graph built during fitting. ``"embedding"`` places each sample in
-            the node embedding and then in the condensed cluster tree, like
-            HDBSCAN's ``approximate_predict``.
+            How to assign new samples to clusters. With "vote" each new sample goes
+            to the cluster with the most support among its nearest training samples,
+            weighting each neighbor by how strongly it is connected to the new sample
+            and how strongly it belongs to its cluster. With "embedding" each new
+            sample is placed in the node embedding near its neighbors, and then
+            located in the cluster tree.
 
         k : int or None, default=None
-            Number of neighbours (counting the sample itself, as in
-            ``n_neighbors``) used to place each sample. Defaults to the fitted
-            ``n_neighbors``.
+            The number of neighbors to use when placing each new sample (counting
+            the sample itself, as for ``n_neighbors``). If None, the
+            ``n_neighbors`` used for fitting is used.
 
         epsilon : float, default=0.1
-            Accuracy/speed trade-off of the nearest-neighbour search.
+            Controls the trade-off between speed and accuracy of the nearest
+            neighbor search; larger values search more thoroughly.
 
-        noise_threshold : float, array of floats or None, default=None
-            ``"vote"`` only. Samples whose winning score (as a fraction of the
-            total edge weight) is below the threshold are labelled noise
-            (-1). By default each layer uses a threshold calibrated so that
-            predicting the training samples from their neighbours reproduces
-            the layer's training noise fraction.
+        noise_threshold : float, array-like of float or None, default=None
+            Only used with ``method="vote"``. New samples with less support than
+            this (as a fraction of their total neighbor weight) are labeled as noise.
+            If None, a threshold is chosen for each layer so that roughly the same
+            fraction of samples are noise as in the training data.
 
         refine_epochs : int, default=10
-            ``"embedding"`` only. Samples are placed in the node embedding at
-            the weighted mean of their neighbours' positions; this many epochs
-            of the node embedding's SGD (on the new samples only, with the
-            training embedding fixed) then refine their positions. Without
-            refinement the mean position tends to sit inside clusters, so fewer
-            samples are labelled noise than in training.
+            Only used with ``method="embedding"``. The number of epochs of
+            optimization used to refine the position of each new sample in the node
+            embedding, with the training samples held fixed.
 
         Returns
         -------
-        labels : list of arrays of shape (n_samples,)
-            Labels for each layer, aligned with ``cluster_layers_``.
 
-        strengths : list of arrays of shape (n_samples,)
-            Membership strengths in [0, 1] for each layer (0 for noise).
+        labels : list of array-like of shape (n_samples,)
+            The cluster labels of the new data for each layer, in the same order as
+            ``cluster_layers_``. A value of -1 indicates a noise point.
+
+        strengths : list of array-like of shape (n_samples,)
+            The membership strengths of the new data for each layer, between 0 and
+            1 (0 for noise points).
         """
         self._check_prediction_data()
         if method == "vote":
@@ -1114,27 +1121,64 @@ class EVoC(BaseEstimator, ClusterMixin):
         refine_epochs=10,
         return_strengths=False,
     ):
-        """Assign new samples to clusters without refitting.
+        """Assign new data to the clusters of the fitted model.
 
-        Requires a model fitted with ``prediction_data=True``. See
-        :meth:`predict_layers` for the parameters.
+        This assigns new samples to clusters without refitting, using the layer
+        that ``labels_`` comes from unless another layer is requested. The model
+        must have been fitted with ``prediction_data=True``.
 
         Parameters
         ----------
+
+        X : array-like of shape (n_samples, n_features)
+            The new data. It must be the same kind of data as the training data
+            (float, int8 or uint8) with the same number of features.
+
+        method : {"vote", "embedding"}, default="vote"
+            How to assign new samples to clusters. With "vote" each new sample goes
+            to the cluster with the most support among its nearest training samples,
+            weighting each neighbor by how strongly it is connected to the new sample
+            and how strongly it belongs to its cluster. With "embedding" each new
+            sample is placed in the node embedding near its neighbors, and then
+            located in the cluster tree.
+
+        k : int or None, default=None
+            The number of neighbors to use when placing each new sample (counting
+            the sample itself, as for ``n_neighbors``). If None, the
+            ``n_neighbors`` used for fitting is used.
+
+        epsilon : float, default=0.1
+            Controls the trade-off between speed and accuracy of the nearest
+            neighbor search; larger values search more thoroughly.
+
         layer : int or None, default=None
-            The cluster layer to predict; None gives the layer used for
-            ``labels_``.
+            The cluster layer to assign the new data to. If None, the layer used for
+            ``labels_`` is used.
+
+        noise_threshold : float, array-like of float or None, default=None
+            Only used with ``method="vote"``. New samples with less support than
+            this (as a fraction of their total neighbor weight) are labeled as noise.
+            If None, a threshold is chosen for each layer so that roughly the same
+            fraction of samples are noise as in the training data.
+
+        refine_epochs : int, default=10
+            Only used with ``method="embedding"``. The number of epochs of
+            optimization used to refine the position of each new sample in the node
+            embedding, with the training samples held fixed.
 
         return_strengths : bool, default=False
-            Also return membership strengths.
+            Whether to also return membership strengths.
 
         Returns
         -------
-        labels : array of shape (n_samples,)
-            Cluster labels, -1 for noise.
 
-        strengths : array of shape (n_samples,)
-            Only if ``return_strengths`` is True.
+        labels : array-like of shape (n_samples,)
+            The cluster labels of the new data. A value of -1 indicates a noise
+            point.
+
+        strengths : array-like of shape (n_samples,)
+            The membership strengths of the new data, between 0 and 1. Only
+            returned if ``return_strengths`` is True.
         """
         self._check_prediction_data()
         if layer is None:
@@ -1167,16 +1211,37 @@ class EVoC(BaseEstimator, ClusterMixin):
         return apply_thresholds(best_labels, best_scores, thresholds)
 
     def embed(self, X, *, k=None, epsilon=0.1, refine_epochs=10):
-        """Positions of new samples in the node embedding.
+        """Find the positions of new data in the node embedding.
 
-        Each sample is placed at the mean of its nearest training samples'
-        embedding positions, weighted by fuzzy k-NN graph edge weights, and
-        optionally refined (see ``refine_epochs`` in :meth:`predict_layers`).
-        Samples with no neighbours get NaN positions.
+        Each new sample is placed at the weighted average of the positions of its
+        nearest training samples, and then optionally refined. The model must have
+        been fitted with ``prediction_data=True``.
+
+        Parameters
+        ----------
+
+        X : array-like of shape (n_samples, n_features)
+            The new data. It must be the same kind of data as the training data
+            (float, int8 or uint8) with the same number of features.
+
+        k : int or None, default=None
+            The number of neighbors to use when placing each new sample. If None,
+            the ``n_neighbors`` used for fitting is used.
+
+        epsilon : float, default=0.1
+            Controls the trade-off between speed and accuracy of the nearest
+            neighbor search.
+
+        refine_epochs : int, default=10
+            The number of epochs of optimization used to refine each position, with
+            the training samples held fixed.
 
         Returns
         -------
-        positions : array of shape (n_samples, n_components)
+
+        positions : array-like of shape (n_samples, n_components)
+            The positions of the new data in the node embedding. Samples with no
+            neighbors get NaN positions.
         """
         self._check_prediction_data()
         pdata = self.prediction_data_
@@ -1261,14 +1326,15 @@ class EVoC(BaseEstimator, ClusterMixin):
         Expired samples are removed first and new samples are then appended,
         so afterwards the samples are the remaining ones, in their previous
         order, followed by ``X_new``. The k-NN graph is updated incrementally,
-        new samples are placed in the node embedding near their neighbours,
+        new samples are placed in the node embedding near their neighbors,
         and the embedding is re-clustered. Each new cluster layer is matched to
-        the old layer with the most similar number of clusters and relabelled
+        the old layer with the most similar number of clusters and relabeled
         so that clusters keep their ids. Use ``sample_ids_`` to keep track of
         which sample is which across updates.
 
         Parameters
         ----------
+
         X_new : array-like of shape (n_new, n_features) or None, default=None
             New samples, of the same kind (float, int8 or uint8) and number of
             features as the training data.
@@ -1291,33 +1357,33 @@ class EVoC(BaseEstimator, ClusterMixin):
             new ids, and ids of clusters that disappear are not reused, so labels
             need not be contiguous. The old layer each new layer was matched to
             is recorded in ``update_layer_matches_``. If False, layers are
-            labelled as a fresh fit would label them.
+            labeled as a fresh fit would label them.
 
         optimize : {"new", "all"}, default="new"
             Which node embedding positions may change. "new" keeps the positions
             of existing samples, which keeps their clustering most stable. "all"
-            re-optimises every position starting from the current embedding,
+            re-optimizes every position starting from the current embedding,
             which lets the embedding adapt to the new samples at the cost of
             moving the existing ones.
 
         n_epochs : int or None, default=None
-            The number of epochs of node embedding optimisation. With
+            The number of epochs of node embedding optimization. With
             ``optimize="new"`` the default is 0, which places new samples at the
-            weighted mean of their neighbours' positions; this proved more
-            stable than optimising only the new samples. With ``optimize="all"``
+            weighted mean of their neighbors' positions; this proved more
+            stable than optimizing only the new samples. With ``optimize="all"``
             the default is ``max(10, round(0.4 * n_epochs))``.
 
         initial_alpha : float or None, default=None
-            The initial learning rate for the optimisation; defaults to 0.1 for
+            The initial learning rate for the optimization; defaults to 0.1 for
             ``optimize="new"`` and 0.01 for ``optimize="all"``. Lower values move
             existing samples less.
 
         epsilon : float, default=0.2
             Controls the accuracy/speed trade-off of the search for new samples'
-            neighbours.
+            neighbors.
 
         refresh_index : bool, default=True
-            Whether to rebuild the nearest neighbour search index now, rather
+            Whether to rebuild the nearest neighbor search index now, rather
             than on the next call that needs it.
 
         random_state : int, RandomState instance or None, default=None
@@ -1326,6 +1392,7 @@ class EVoC(BaseEstimator, ClusterMixin):
 
         Returns
         -------
+
         labels : array of shape (n_new,)
             The labels of the new samples in the ``labels_`` layer.
         """
