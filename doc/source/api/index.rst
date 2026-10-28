@@ -25,6 +25,26 @@ Core Clustering
 
 .. autofunction:: evoc_clusters
 
+Prediction and Search
+---------------------
+
+.. currentmodule:: evoc.search
+
+.. autoclass:: SearchIndex
+   :members: query
+
+.. autofunction:: prepare_search
+
+.. currentmodule:: evoc.prediction
+
+.. autoclass:: PredictionData
+   :no-members:
+
+.. autoclass:: ClusterHierarchy
+   :no-members:
+
+.. autofunction:: labels_from_hierarchy
+
 Utility Functions
 -----------------
 

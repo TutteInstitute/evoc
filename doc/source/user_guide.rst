@@ -106,6 +106,10 @@ These parameters provide more fine-grained control over the algorithm and are ty
 **random_state** : int, optional
    Random seed for reproducible results. When specified, enables deterministic mode.
 
+**prediction_data** : bool, default=False
+   Keep the state needed by ``predict``, ``predict_layers`` and ``update`` (see
+   `Predicting and Updating`_). Costs memory of roughly the size of the training data.
+
 Best Practices
 --------------
 
@@ -182,6 +186,113 @@ of ensuring reproducibility.
        max_layers=3,          # Limit hierarchy depth
    )
 
+
+Predicting and Updating
+-----------------------
+
+A fitted model can assign new samples to its clusters, or take on new samples,
+without refitting from scratch. Both need extra state from fitting, so fit with
+``prediction_data=True``:
+
+.. code-block:: python
+
+   clusterer = EVoC(prediction_data=True, random_state=42).fit(X)
+
+This keeps a copy of the training data (as float32 for float input), the node
+embedding, the condensed cluster trees and a few per-sample arrays, so it costs
+memory of roughly the size of the training data. Clustering results are the
+same with and without it. The search structures are built on first use, or
+up front with ``clusterer.prepare_prediction()``.
+
+Predicting clusters for new samples
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``predict`` assigns new samples to the clusters of the ``labels_`` layer (or
+of any layer with ``layer=i``); ``predict_layers`` returns labels and
+membership strengths for every layer at once. New samples must be of the same
+kind (float, int8 or bit-packed uint8) and dimension as the training data.
+
+.. code-block:: python
+
+   labels = clusterer.predict(X_new)
+   labels, strengths = clusterer.predict(X_new, return_strengths=True)
+   layer_labels, layer_strengths = clusterer.predict_layers(X_new)
+
+Both first find each sample's nearest training samples with a search index
+(see below), and offer two methods:
+
+* ``method="vote"`` (default): each sample joins the cluster with the most
+  support among its neighbours, each neighbour counting with its fuzzy k-NN
+  graph edge weight times its membership strength. Samples with too little
+  support are noise; the threshold is calibrated per layer so that predicting
+  the training samples from their neighbours reproduces each layer's noise
+  rate, and can be set with ``noise_threshold``.
+* ``method="embedding"``: each sample is placed in the node embedding (at the
+  edge-weighted mean of its neighbours' positions, refined by a few epochs of
+  the embedding optimisation, see ``refine_epochs``) and then in the condensed
+  cluster tree, as HDBSCAN's ``approximate_predict`` does. Training samples
+  predicted from their own positions this way get their own labels back
+  (over 98% of them on MNIST, for every layer). ``clusterer.embed(X_new)``
+  returns the positions themselves.
+
+The two methods agree closely in practice. On MNIST, predicting the 10,000 test
+images with a model fitted on the 60,000 training images agrees with the
+labels a fit on all 70,000 images gives them about as well as two such fits
+with different seeds agree with each other. A single sample takes well under a
+millisecond to predict.
+
+Adding samples to a model
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``update`` adds samples to a fitted model. The k-NN graph is extended
+incrementally (new samples' neighbours come from the search index, and the
+graph is refined only around them), new samples are placed in the node
+embedding, and the embedding is re-clustered. Each new layer is then matched to
+the old layer with the most similar number of clusters and relabelled so that
+clusters keep their ids:
+
+.. code-block:: python
+
+   new_labels = clusterer.update(X_new)   # labels of the new samples
+   clusterer.labels_                       # now covers X followed by X_new
+   clusterer.update_layer_matches_         # old layer each layer was matched to
+
+Clusters that have no counterpart in the old layer get new ids above all
+existing ones, and ids of clusters that disappear are not reused, so after an
+update labels need not be contiguous. Options:
+
+* ``optimize="new"`` (default) keeps existing samples' embedding positions;
+  ``optimize="all"`` re-optimises every position starting from the current
+  embedding, which lets the embedding adapt but moves existing samples;
+* ``recluster=False`` keeps all existing labels and assigns the new samples
+  with the embedding prediction method;
+* ``relabel=False`` labels the re-clustered layers as a fresh fit would.
+
+On MNIST, adding the 10,000 test images to a model of the 60,000 training
+images gives a k-NN graph as accurate as building it from scratch, and the
+updated ``labels_`` agree with the previous labels on the training images
+better than a refit on all images does, at the same accuracy against the digit
+labels.
+
+Nearest-neighbour search
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The search index used by ``predict`` and ``update`` is available directly as
+:class:`evoc.search.SearchIndex`. It is built from training data and its k-NN
+graph (as returned by ``evoc.knn_graph.knn_graph``) and answers k-nearest
+neighbour queries in EVoC's distance units (``-log2`` of cosine similarity for
+float and int8 data, ``-log2`` of Jaccard similarity for bit-packed uint8
+data). Its search functions are compiled once and cached on disk, so building
+an index takes well under a second for MNIST-sized data.
+
+.. code-block:: python
+
+   from evoc.knn_graph import knn_graph
+   from evoc.search import SearchIndex
+
+   nn_inds, nn_dists = knn_graph(X, n_neighbors=15)
+   index = SearchIndex(X, nn_inds, nn_dists)
+   indices, distances = index.query(X_new, k=10)
 
 Troubleshooting
 ---------------

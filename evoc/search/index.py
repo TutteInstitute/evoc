@@ -80,6 +80,9 @@ class SearchIndex:
     order : array of shape (n_samples,)
         The stored data are permuted into search-tree order; ``order[i]`` is
         the original training row of stored row ``i``.
+
+    n_graph_edges : int
+        Number of edges in the search graph.
     """
 
     def __init__(
@@ -174,11 +177,8 @@ class SearchIndex:
             tree.leaf_size,
         )
         self.min_distance = np.float32(min_distance)
+        self.n_graph_edges = int(indices.shape[0])
         self._init_search()
-
-    @property
-    def n_graph_edges(self):
-        return int(self._indices.shape[0])
 
     def _init_search(self):
         self._visited = np.zeros(self.n_samples // 8 + 1, dtype=np.uint8)
