@@ -3,6 +3,26 @@ Changelog
 
 This document records all notable changes to EVoC.
 
+Unreleased
+----------
+
+**Features:**
+
+* Prediction of clusters for new data with ``predict`` and ``predict_layers`` (requires ``prediction_data=True``)
+* Incremental updates with ``update``, including expiring old data via ``X_expired`` for moving windows
+* Stable cluster labels across updates, and stable sample ids in ``sample_ids_``
+* Fast nearest neighbor search over fitted data with ``evoc.search.SearchIndex``
+* Benchmark script for search, prediction and updates (``benchmarks/predict_update_bench.py``)
+
+**Changes:**
+
+* int8 data now uses cosine similarity for both finding neighbors and reporting neighbor distances, matching float 
+  data; this changes clustering results for int8 data
+
+**Fixes:**
+
+* ``cluster_tree_`` now handles cluster labels with gaps
+
 Version 0.1.0 (TBD)
 -------------------
 

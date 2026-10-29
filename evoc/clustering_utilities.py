@@ -62,7 +62,9 @@ def find_peaks(x):
 
 
 @numba.njit(cache=True)
-def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples):
+def _binary_search_for_n_clusters_with_tree(
+    uncondensed_tree, approx_n_clusters, n_samples
+):
     lower_bound_min_cluster_size = 2
     upper_bound_min_cluster_size = n_samples // 2
     mid_min_cluster_size = int(
@@ -105,7 +107,7 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
         leaves = extract_leaves(lower_tree)
         clusters = get_cluster_label_vector(lower_tree, leaves, 0.0, n_samples)
         strengths = get_point_membership_strength_vector(lower_tree, leaves, clusters)
-        return leaves, clusters, strengths
+        return leaves, clusters, strengths, lower_tree
     elif abs(lower_n_clusters - approx_n_clusters) > abs(
         upper_n_clusters - approx_n_clusters
     ):
@@ -113,7 +115,7 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
         leaves = extract_leaves(upper_tree)
         clusters = get_cluster_label_vector(upper_tree, leaves, 0.0, n_samples)
         strengths = get_point_membership_strength_vector(upper_tree, leaves, clusters)
-        return leaves, clusters, strengths
+        return leaves, clusters, strengths, upper_tree
     else:
         lower_tree = condense_tree(uncondensed_tree, lower_bound_min_cluster_size)
         lower_leaves = extract_leaves(lower_tree)
@@ -130,12 +132,29 @@ def _binary_search_for_n_clusters(uncondensed_tree, approx_n_clusters, n_samples
             strengths = get_point_membership_strength_vector(
                 lower_tree, lower_leaves, lower_clusters
             )
-            return lower_leaves, lower_clusters, strengths
+            return lower_leaves, lower_clusters, strengths, lower_tree
         else:
             strengths = get_point_membership_strength_vector(
                 upper_tree, upper_leaves, upper_clusters
             )
-            return upper_leaves, upper_clusters, strengths
+            return upper_leaves, upper_clusters, strengths, upper_tree
+
+
+def _binary_search_for_n_clusters(
+    uncondensed_tree, approx_n_clusters, n_samples, return_tree=False
+):
+    """Find the minimum cluster size whose leaf clustering has closest to
+    ``approx_n_clusters`` clusters.
+
+    Returns ``(leaves, labels, strengths)``, plus the condensed tree the leaves
+    belong to if ``return_tree`` is True.
+    """
+    leaves, clusters, strengths, tree = _binary_search_for_n_clusters_with_tree(
+        uncondensed_tree, approx_n_clusters, n_samples
+    )
+    if return_tree:
+        return leaves, clusters, strengths, tree
+    return leaves, clusters, strengths
 
 
 # @numba.njit(cache=True)
@@ -145,7 +164,13 @@ def binary_search_for_n_clusters(
     n_threads,
     *,
     min_samples=5,
+    return_tree=False,
 ):
+    """Cluster ``data`` into approximately ``approx_n_clusters`` clusters.
+
+    Returns ``(labels, strengths)``, plus the condensed tree and the selected
+    cluster ids (leaves) if ``return_tree`` is True.
+    """
     numba_tree = build_kdtree(data.astype(np.float32))
     edges = parallel_boruvka(
         numba_tree, n_threads, min_samples=min_samples, reproducible=False
@@ -155,9 +180,11 @@ def binary_search_for_n_clusters(
 
     n_samples = data.shape[0]
 
-    leaves, clusters, strengths = _binary_search_for_n_clusters(
-        uncondensed_tree, approx_n_clusters, n_samples
+    leaves, clusters, strengths, condensed_tree = _binary_search_for_n_clusters(
+        uncondensed_tree, approx_n_clusters, n_samples, return_tree=True
     )
+    if return_tree:
+        return clusters, strengths, condensed_tree, leaves
     return clusters, strengths
 
 
@@ -342,15 +369,17 @@ def _build_cluster_tree(labels):
                 labels[lower_layer][upper_cluster_order],
                 np.cumsum(np.bincount(labels[upper_layer] + 1))[:-1],
             )
-            for i, label in enumerate(upper_layer_unique_labels):
+            for label in upper_layer_unique_labels:
                 if label >= 0:
-                    for child in cluster_groups[i]:
+                    # Groups are indexed by label + 1 (labels need not be
+                    # contiguous, e.g. after EVoC.update)
+                    for child in cluster_groups[label + 1]:
                         if child >= 0 and child not in found[lower_layer]:
                             mapping.append((upper_layer, label, lower_layer, child))
                             found[lower_layer].add(child)
 
     for lower_layer in range(len(labels) - 1, -1, -1):
-        for child in range(labels[lower_layer].max() + 1):
+        for child in np.unique(labels[lower_layer]):
             if child >= 0 and child not in found[lower_layer]:
                 mapping.append((len(labels), 0, lower_layer, child))
 

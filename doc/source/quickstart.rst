@@ -131,6 +131,26 @@ pre-quantized or binarized depending on the model and/or storage format you are 
    X_binary = np.packbits(embeddings > 0.0, axis=1)
    labels_binary = EVoC().fit_predict(X_binary)
 
+Working with New Data
+---------------------
+
+If you expect more data to arrive after fitting, create the clusterer with ``prediction_data=True``. You can then assign 
+new samples to the existing clusters with ``predict``, or add new samples to the model (and expire old ones) with 
+``update``, which keeps cluster labels stable as the data changes:
+
+.. code-block:: python
+
+   clusterer = EVoC(prediction_data=True)
+   clusterer.fit(blob_data[:8000])
+
+   # Assign new samples to the existing clusters
+   new_labels = clusterer.predict(blob_data[8000:])
+
+   # Or fold them into the model, dropping the oldest 2000 samples
+   clusterer.update(blob_data[8000:], X_expired=np.arange(2000))
+
+See the "Predicting and Updating" section of the :doc:`user_guide` for more details.
+
 Next Steps
 ----------
 

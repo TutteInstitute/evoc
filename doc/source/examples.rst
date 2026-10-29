@@ -181,6 +181,40 @@ Memory-Efficient Processing
        chunk_labels = clusterer.fit_predict(chunk)
        all_labels.extend(chunk_labels)
 
+Working with New Data
+---------------------
+
+Predicting Clusters for New Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Keep the information needed to predict, then fit as usual
+   clusterer = EVoC(prediction_data=True)
+   clusterer.fit(X_train)
+
+   # Assign new data to the existing clusters
+   labels = clusterer.predict(X_new)
+
+   # Or get labels for every cluster layer at once
+   layer_labels, layer_strengths = clusterer.predict_layers(X_new)
+
+Clustering a Moving Window
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Cluster the first window of data
+   clusterer = EVoC(prediction_data=True)
+   clusterer.fit(first_window)
+
+   for batch in incoming_batches:
+       # Drop the oldest data and add the new batch; cluster labels stay stable
+       new_labels = clusterer.update(batch, X_expired=np.arange(len(batch)))
+
+       # sample_ids_ tracks which samples are currently in the window
+       print(f"Window holds samples {clusterer.sample_ids_.min()} to {clusterer.sample_ids_.max()}")
+
 Specialized Data Types
 ----------------------
 

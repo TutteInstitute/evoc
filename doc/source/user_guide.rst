@@ -106,6 +106,10 @@ These parameters provide more fine-grained control over the algorithm and are ty
 **random_state** : int, optional
    Random seed for reproducible results. When specified, enables deterministic mode.
 
+**prediction_data** : bool, default=False
+   Whether to keep the extra information needed to predict clusters for new data and to update the model 
+   (see `Predicting and Updating`_). This uses roughly as much extra memory as the training data.
+
 Best Practices
 --------------
 
@@ -182,6 +186,121 @@ of ensuring reproducibility.
        max_layers=3,          # Limit hierarchy depth
    )
 
+
+Predicting and Updating
+-----------------------
+
+Once you have a clustering you are happy with, new data will often keep arriving. Rather than refitting from scratch 
+every time, EVoC can assign new samples to the existing clusters, or fold new samples into the model (and drop old 
+ones) while keeping cluster labels stable. To make this possible EVoC needs to keep some extra information from 
+fitting, so you need to ask for it with ``prediction_data=True``:
+
+.. code-block:: python
+
+   clusterer = EVoC(prediction_data=True, random_state=42)
+   clusterer.fit(X)
+
+This keeps a copy of the training data, the node embedding, and the cluster trees, so expect it to use roughly as much 
+extra memory as the training data itself. The clustering results are exactly the same whether or not you set it.
+
+Predicting Clusters for New Samples
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``predict`` method assigns new samples to the clusters of a fitted model, just as you would expect from any 
+sklearn style clusterer. By default you get labels for the same layer as ``labels_``, but you can ask for any layer, 
+or for all of them at once with ``predict_layers``:
+
+.. code-block:: python
+
+   labels = clusterer.predict(X_new)
+
+   # Labels and membership strengths for a particular layer
+   labels, strengths = clusterer.predict(X_new, layer=0, return_strengths=True)
+
+   # Labels and membership strengths for every layer
+   layer_labels, layer_strengths = clusterer.predict_layers(X_new)
+
+The new data needs to be the same kind of data as the training data (float, int8 or binary uint8) with the same number 
+of features. Both methods start by finding the nearest training samples to each new sample, and then there are two 
+ways to decide on a cluster:
+
+* **method="vote"**: The default. Each new sample goes to the cluster that has the most support among its nearest 
+  training samples, weighting each neighbor by how strongly it is connected to the new sample and how strongly it 
+  belongs to its own cluster. Samples without enough support are labeled as noise, with the bar set so that roughly 
+  the same fraction of samples are noise as in the training data (you can change it with ``noise_threshold``).
+* **method="embedding"**: Places each new sample in the node embedding, near its neighbors, and then finds where it 
+  would fall in the cluster tree. This follows the clustering itself more closely, which can matter for deciding 
+  what is noise.
+
+In practice the two methods agree on the vast majority of samples, and both are fast enough to use one sample at a 
+time. If you want the positions of new samples in the node embedding you can get them with ``embed``.
+
+Adding and Expiring Data
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you want the new data to become part of the model, rather than just being labeled, use ``update``. This adds the 
+new samples, updates the nearest neighbor graph and the node embedding, and re-clusters. EVoC then matches each new 
+cluster layer to the corresponding old layer and relabels the clusters so that, as far as possible, every cluster keeps 
+its label:
+
+.. code-block:: python
+
+   new_labels = clusterer.update(X_new)
+
+   # labels_ now covers the original samples followed by the new ones
+   clusterer.labels_
+
+You can also remove data with the ``X_expired`` keyword argument. This makes it easy to keep a clustering of a moving 
+window of data up to date as time goes by: each time new data arrives, expire the oldest data and add the new.
+
+.. code-block:: python
+
+   clusterer = EVoC(prediction_data=True).fit(first_window)
+
+   for batch in new_batches:
+       # Expire the oldest len(batch) samples and add the new batch
+       clusterer.update(batch, X_expired=np.arange(len(batch)))
+
+Expired samples are removed first, and new samples are added at the end, so the remaining samples keep their order. 
+You can say which samples to expire in a few ways:
+
+* **Row positions**: An array of integer positions, such as ``np.arange(1000)`` for the oldest thousand samples.
+* **A boolean mask**: ``True`` for each sample to expire.
+* **The data itself**: A 2D array of samples; each one removes the oldest matching sample in the model.
+
+Since positions change as data comes and goes, every sample also gets an id in ``sample_ids_`` that never changes. 
+Fitting numbers the samples from zero, and each update gives new samples the next ids. To expire samples by id you can 
+use a mask such as ``np.isin(clusterer.sample_ids_, ids_to_expire)``. You can also call ``update`` with only 
+``X_expired`` to drop data without adding any.
+
+Clusters that have no counterpart in the old clustering get brand new labels, and the labels of clusters that 
+disappear are never reused, so after an update the labels need not run from zero without gaps. A few options control 
+how the update is done:
+
+* **recluster**: Set to ``False`` to keep all existing labels and just assign the new samples to existing clusters (this 
+  can't be combined with ``X_expired``).
+* **relabel**: Set to ``False`` to label the clusters as a fresh fit would, rather than matching the old labels.
+* **optimize**: By default only new samples are placed in the node embedding and existing samples stay put, which 
+  keeps the clustering of existing data as stable as possible. Use ``optimize="all"`` to let the whole embedding adjust 
+  to the new data instead.
+
+Nearest Neighbor Search
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The nearest neighbor search that powers ``predict`` and ``update`` can also be used on its own. Build a 
+``SearchIndex`` from your data and its nearest neighbor graph, and then query it with new data:
+
+.. code-block:: python
+
+   from evoc.knn_graph import knn_graph
+   from evoc.search import SearchIndex
+
+   nn_inds, nn_dists = knn_graph(X, n_neighbors=15)
+   index = SearchIndex(X, nn_inds, nn_dists)
+   indices, distances = index.query(X_new, k=10)
+
+Distances are reported the same way EVoC reports them for ``nn_dists_``, which is based on cosine similarity for float 
+and int8 data, and Jaccard similarity for binary data.
 
 Troubleshooting
 ---------------

@@ -123,7 +123,14 @@ def nn_descent(
     verbose=False,
     use_sorted_updates=True,
     delta_improv=None,
+    init_graph=None,
 ):
+    """Run NN-descent for the input dtype and convert to output distances.
+
+    ``init_graph``, if given, is a heap (indices, distances, flags) from
+    ``make_heap`` in internal distance units, without self neighbours, to start
+    from instead of the RP-forest initialisation. It is updated in place.
+    """
     if input_dtype == np.uint8:
         if use_sorted_updates:
             neighbor_graph = nn_descent_uint8_sorted(
@@ -136,6 +143,7 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
         else:
             neighbor_graph = nn_descent_uint8(
@@ -148,6 +156,7 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
         neighbor_graph[1][:] = -np.log2(-neighbor_graph[1])
     elif input_dtype == np.int8:
@@ -162,6 +171,7 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
         else:
             neighbor_graph = nn_descent_int8(
@@ -174,8 +184,11 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
-        neighbor_graph[1][:] = 1.0 / (-neighbor_graph[1])
+        # Internal int8 distances are negated cosine similarities, so int8 uses
+        # the same output transform as float data.
+        neighbor_graph[1][:] = np.maximum(-np.log2(-neighbor_graph[1]), 0.0)
     else:
         if use_sorted_updates:
             neighbor_graph = nn_descent_float_sorted(
@@ -188,6 +201,7 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
         else:
             neighbor_graph = nn_descent_float(
@@ -200,6 +214,7 @@ def nn_descent(
                 delta_improv=delta_improv,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                init_graph=init_graph,
             )
         neighbor_graph[1][:] = np.maximum(-np.log2(-neighbor_graph[1]), 0.0)
 

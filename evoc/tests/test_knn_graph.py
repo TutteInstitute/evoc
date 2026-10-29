@@ -434,6 +434,36 @@ class TestKNNGraph:
         assert np.all(indices >= 0)
         assert np.all(indices < len(int8_test_data))
 
+    def test_knn_graph_int8_cosine_distances(self):
+        """int8 neighbours are ranked by cosine; output is -log2(cosine)."""
+        rng = np.random.RandomState(0)
+        centers = rng.normal(size=(5, 40)) * 40
+        X = centers[rng.randint(5, size=600)] + rng.normal(scale=20, size=(600, 40))
+        # Varying row scale: cosine and raw-dot rankings then differ
+        X *= rng.uniform(0.3, 1.0, size=(600, 1))
+        data = np.clip(np.round(X), -127, 127).astype(np.int8)
+        k = 10
+        indices, distances = knn_graph(data, n_neighbors=k, random_state=42)
+
+        assert not np.allclose(distances[:, 1:], distances[0, 1])
+        assert np.all(np.diff(distances, axis=1) >= -1e-6)
+
+        dataf = data.astype(np.float64)
+        dataf /= np.linalg.norm(dataf, axis=1, keepdims=True)
+        sims = dataf @ dataf.T
+        np.fill_diagonal(sims, -np.inf)
+        true_nn = np.argsort(-sims, axis=1)[:, : k - 1]
+        recall = np.mean(
+            [len(np.intersect1d(indices[i, 1:], true_nn[i])) for i in range(600)]
+        ) / (k - 1)
+        assert recall >= 0.9
+
+        rows = np.arange(600)[:, None]
+        expected = -np.log2(np.clip(sims[rows, indices[:, 1:]], 1e-38, 1.0))
+        np.testing.assert_allclose(
+            distances[:, 1:], np.maximum(expected, 0.0), rtol=1e-4, atol=1e-5
+        )
+
     def test_knn_graph_parameters(self, float_test_data):
         """Test knn_graph with various parameter combinations."""
         # Test with custom parameters
