@@ -320,16 +320,17 @@ def node_embedding(
 
     rng_val = random_state.randint(INT32_MAX, size=n_epochs)
 
-    coo_graph = graph.tocoo()
-    head_u4 = coo_graph.row.astype(np.uint32)
-    tail_u4 = coo_graph.col.astype(np.uint32)
-    # New
-    csr_indptr = graph.indptr.astype(np.uint32)
-    csr_indices = graph.indices.astype(np.uint32)
-    updates = np.zeros_like(embedding)
-    node_order = np.arange(graph.shape[0], dtype=np.uint32)
-    gamma_schedule = np.linspace(0.5, 1.5, n_epochs)
-    # End new
+    if reproducible_flag:
+        csr_indptr = graph.indptr.astype(np.uint32)
+        csr_indices = graph.indices.astype(np.uint32)
+        updates = np.zeros_like(embedding)
+        node_order = np.arange(graph.shape[0], dtype=np.uint32)
+        gamma_schedule = np.linspace(0.5, 1.5, n_epochs)
+    else:
+        coo_graph = graph.tocoo()
+        head_u4 = coo_graph.row.astype(np.uint32)
+        tail_u4 = coo_graph.col.astype(np.uint32)
+        del coo_graph
     n_vertices = np.uint32(graph.shape[0])
     block_size = max(1024, n_vertices // 8)
     dim = np.uint8(embedding.shape[1])
