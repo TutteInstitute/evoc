@@ -162,8 +162,7 @@ def test_update_cluster_ids_stable(update_case):
             best = (stability, layer, match)
     stability, layer, match = best
     assert stability >= min(refit_stability, 0.95) - 0.02
-    # Matched clusters keep their ids. update relabels each layer against the
-    # old layer it was matched to, which need not be the layer behind labels_
+    # Matched clusters keep the ids of the old layer they were matched to
     matched_old = update_case["old_layers"][match]
     clustered = (matched_old >= 0) & (layer[:N_FIT] >= 0)
     assert np.mean(layer[:N_FIT][clustered] == matched_old[clustered]) >= 0.9
