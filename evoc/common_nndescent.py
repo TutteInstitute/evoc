@@ -540,7 +540,7 @@ def _push_candidate(priorities, indices, row, d, n):
 
 @numba.njit(
     parallel=True,
-    cache=False,
+    cache=True,
     locals={"idx": numba.types.int64, "owner": numba.types.int64, "k": numba.types.int64},
 )
 def build_candidates_owner(
