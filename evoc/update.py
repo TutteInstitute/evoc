@@ -489,10 +489,18 @@ def resolve_expired(X_expired, data, search_index, n_candidates=16):
         def matches(row, positions):
             return np.all(np.abs(data[positions] - row) <= tolerance, axis=1)
 
+        def may_match(row, first_values):
+            return np.abs(first_values - row[0]) <= tolerance
+
     else:
 
         def matches(row, positions):
             return np.all(data[positions] == row, axis=1)
+
+        def may_match(row, first_values):
+            return first_values == row[0]
+
+    first_feature = data[:, 0]
 
     for i in range(queries.shape[0]):
         row = queries[i]
@@ -501,12 +509,14 @@ def resolve_expired(X_expired, data, search_index, n_candidates=16):
         hits = found[matches(row, found)] if found.shape[0] else found
         if hits.shape[0] > 0:
             earlier = np.flatnonzero(keep[:hits[0]])
+            earlier = earlier[may_match(row, first_feature[earlier])]
             earlier_hits = earlier[matches(row, earlier)]
             if earlier_hits.shape[0] > 0:
                 hits = earlier_hits
         if hits.shape[0] == 0:
             # Fall back to scanning every remaining row
             remaining = np.flatnonzero(keep)
+            remaining = remaining[may_match(row, first_feature[remaining])]
             hits = remaining[matches(row, remaining)]
             if hits.shape[0] == 0:
                 raise ValueError(
