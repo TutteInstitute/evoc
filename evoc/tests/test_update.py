@@ -85,16 +85,15 @@ from sklearn.metrics import adjusted_rand_score
 from evoc import EVoC
 from evoc.clustering_utilities import build_cluster_tree
 from evoc.prediction import labels_from_hierarchy
-from evoc.update import match_layers, stable_relabel
+from evoc.update import stable_relabel
 
 N_FIT = 2500
 
 
-@pytest.fixture(scope="module", params=["float", "uint8", "int8"])
-def update_case(request):
+def _update_case(dtype, **kwargs):
     # Seed chosen so that EVoC clusters the blobs cleanly for every dtype
-    X, y = _data(request.param, seed=3)
-    model = EVoC(random_state=0, prediction_data=True).fit(X[:N_FIT])
+    X, y = _data(dtype, seed=3)
+    model = EVoC(random_state=0, prediction_data=True, **kwargs).fit(X[:N_FIT])
     old_layers = [l.copy() for l in model.cluster_layers_]
     old_labels = model.labels_.copy()
     old_embedding = model.prediction_data_.embedding.copy()
@@ -110,6 +109,18 @@ def update_case(request):
         old_embedding=old_embedding,
         new_labels=new_labels,
     )
+
+
+@pytest.fixture(scope="module", params=["float", "uint8", "int8"])
+def update_case(request):
+    return _update_case(request.param)
+
+
+@pytest.fixture(scope="module", params=["float", "uint8", "int8"])
+def update_case_blobs(request):
+    # With default parameters how finely EVoC splits the blobs depends on the
+    # platform and thread count; this recovers exactly the 8 blobs everywhere
+    return _update_case(request.param, approx_n_clusters=8)
 
 
 def test_update_requires_prediction_data():
@@ -144,13 +155,13 @@ def test_update_state_shapes(update_case):
         )
 
 
-def test_update_cluster_ids_stable(update_case):
-    model = update_case["model"]
-    old_labels = update_case["old_labels"]
-    X, y = update_case["X"], update_case["y"]
+def test_update_cluster_ids_stable(update_case_blobs):
+    model = update_case_blobs["model"]
+    old_labels = update_case_blobs["old_labels"]
+    old_layers = update_case_blobs["old_layers"]
+    X, y = update_case_blobs["X"], update_case_blobs["y"]
     # Refitting on everything with another seed is the alternative to update
-    refit = EVoC(random_state=1).fit(X)
-    refit_layer = match_layers([old_labels], refit.cluster_layers_, N_FIT)
+    refit = EVoC(random_state=1, approx_n_clusters=8).fit(X)
     refit_stability = max(
         adjusted_rand_score(old_labels, layer[:N_FIT])
         for layer in refit.cluster_layers_
@@ -159,12 +170,13 @@ def test_update_cluster_ids_stable(update_case):
     for layer, match in zip(model.cluster_layers_, model.update_layer_matches_):
         stability = adjusted_rand_score(old_labels, layer[:N_FIT])
         if best is None or stability > best[0]:
-            best = (stability, layer)
-    stability, layer = best
+            best = (stability, layer, match)
+    stability, layer, match = best
     assert stability >= min(refit_stability, 0.95) - 0.02
-    # Matched clusters keep their ids
-    clustered = (old_labels >= 0) & (layer[:N_FIT] >= 0)
-    assert np.mean(layer[:N_FIT][clustered] == old_labels[clustered]) >= 0.9
+    # Matched clusters keep the ids of the old layer they were matched to
+    old_layer = old_layers[match]
+    clustered = (old_layer >= 0) & (layer[:N_FIT] >= 0)
+    assert np.mean(layer[:N_FIT][clustered] == old_layer[clustered]) >= 0.9
     # New samples are clustered consistently with the ground truth
     new = layer[N_FIT:]
     assert adjusted_rand_score(y[N_FIT:][new >= 0], new[new >= 0]) >= 0.9
@@ -255,11 +267,21 @@ N_WINDOW = 2500
 STEP = 500
 
 
+def _window_case(dtype, **kwargs):
+    X, y = _data(dtype, n=N_WINDOW + 3 * STEP, seed=3)
+    model = EVoC(random_state=0, prediction_data=True, **kwargs).fit(X[:N_WINDOW])
+    return dict(X=X, y=y, blob=pickle.dumps(model), dtype=dtype)
+
+
 @pytest.fixture(scope="module", params=["float", "uint8", "int8"])
 def window_case(request):
-    X, y = _data(request.param, n=N_WINDOW + 3 * STEP, seed=3)
-    model = EVoC(random_state=0, prediction_data=True).fit(X[:N_WINDOW])
-    return dict(X=X, y=y, blob=pickle.dumps(model), dtype=request.param)
+    return _window_case(request.param)
+
+
+@pytest.fixture(scope="module", params=["float", "uint8", "int8"])
+def window_case_blobs(request):
+    # Recovers exactly the 8 blobs on every platform (see update_case_blobs)
+    return _window_case(request.param, approx_n_clusters=8)
 
 
 def test_fit_sets_sample_ids(window_case):
@@ -318,25 +340,33 @@ def test_expire_graph_and_state(window_case):
     np.testing.assert_array_equal(restored.sample_ids_, model.sample_ids_)
 
 
-def test_moving_window(window_case):
-    X, y = window_case["X"], window_case["y"]
-    model = pickle.loads(window_case["blob"])
-    seen_max = list(model._layer_max_labels)
+def _moving_window_steps(case):
+    X = case["X"]
+    model = pickle.loads(case["blob"])
     for step in range(3):
         start, stop = (step + 1) * STEP, N_WINDOW + (step + 1) * STEP
         before = [l.copy() for l in model.cluster_layers_]
+        seen_max = list(model._layer_max_labels)
         model.update(X[stop - STEP : stop], X_expired=np.arange(STEP))
         np.testing.assert_array_equal(model.sample_ids_, np.arange(start, stop))
-        window_labels = y[start:stop]
-        labels = model.labels_
-        clustered = labels >= 0
-        assert adjusted_rand_score(window_labels[clustered], labels[clustered]) >= 0.9
+        yield model, start, stop, before, seen_max
+
+
+def test_moving_window(window_case):
+    for model, _, _, before, seen_max in _moving_window_steps(window_case):
         # Labels that were not in the matched old layer are fresh ids, above
         # every id that layer has ever used
         for layer, match in zip(model.cluster_layers_, model.update_layer_matches_):
             fresh = np.setdiff1d(np.unique(layer[layer >= 0]), np.unique(before[match]))
             assert np.all(fresh > seen_max[match])
-        seen_max = list(model._layer_max_labels)
+
+
+def test_moving_window_accuracy(window_case_blobs):
+    y = window_case_blobs["y"]
+    for model, start, stop, _, _ in _moving_window_steps(window_case_blobs):
+        labels = model.labels_
+        clustered = labels >= 0
+        assert adjusted_rand_score(y[start:stop][clustered], labels[clustered]) >= 0.9
 
 
 def test_expire_only(window_case):

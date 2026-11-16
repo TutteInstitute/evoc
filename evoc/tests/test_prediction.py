@@ -147,6 +147,18 @@ def held_out(dtype):
     return model, X[N_SAMPLES:], y[:N_SAMPLES], y[N_SAMPLES:]
 
 
+@pytest.fixture(scope="module")
+def held_out_blobs(dtype):
+    # With default parameters how finely EVoC splits the blobs (and how much
+    # noise it finds) depends on the platform and thread count, so accuracy
+    # checks use a model that recovers exactly the 8 blobs everywhere
+    X, y = _blob_data(dtype, seed=11, n_samples=N_SAMPLES, n_test=400)
+    model = EVoC(random_state=3, prediction_data=True, approx_n_clusters=8).fit(
+        X[:N_SAMPLES]
+    )
+    return model, X[N_SAMPLES:], y[:N_SAMPLES], y[N_SAMPLES:]
+
+
 def test_predict_requires_prediction_data(fitted_pair):
     X, plain, _ = fitted_pair
     with pytest.raises(ValueError, match="prediction_data=True"):
@@ -186,8 +198,7 @@ def test_predict_vote_shapes_and_default_layer(held_out):
     np.testing.assert_array_equal(st0, strengths[0])
 
 
-def test_predict_vote_leave_one_out(held_out):
-    model, _, _, _ = held_out
+def _leave_one_out_labels(model):
     pdata = model.prediction_data_
     thresholds, _ = calibrate_vote_thresholds(
         model.nn_inds_,
@@ -205,10 +216,20 @@ def test_predict_vote_leave_one_out(held_out):
         *stack_layers(model.cluster_layers_, model.membership_strength_layers_),
     )
     labels, _ = apply_thresholds(best_labels, best_scores, thresholds)
+    return labels
+
+
+def test_predict_vote_leave_one_out(held_out_blobs):
+    model, _, _, _ = held_out_blobs
+    labels = _leave_one_out_labels(model)
     layer = model._labels_layer()
-    # About 0.96 on MNIST (see benchmarks/predict_update_bench.py); how cleanly
-    # the small synthetic data clusters varies a little across environments
+    # About 0.96 on MNIST (see benchmarks/predict_update_bench.py)
     assert np.mean(labels[layer] == model.cluster_layers_[layer]) >= 0.9
+
+
+def test_predict_vote_calibration(held_out):
+    model, _, _, _ = held_out
+    labels = _leave_one_out_labels(model)
     # Calibration reproduces each layer's training noise fraction
     for i, train_labels in enumerate(model.cluster_layers_):
         assert abs(np.mean(labels[i] < 0) - np.mean(train_labels < 0)) < 0.02
@@ -271,8 +292,8 @@ def test_embedding_self_prediction(kwargs):
         )
 
 
-def test_predict_embedding_held_out(held_out):
-    model, X_test, y_train, y_test = held_out
+def test_predict_embedding_held_out(held_out_blobs):
+    model, X_test, y_train, y_test = held_out_blobs
     train_labels = model.labels_
     labels, strengths = model.predict(
         X_test, method="embedding", return_strengths=True
