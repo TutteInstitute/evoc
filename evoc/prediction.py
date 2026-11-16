@@ -292,7 +292,8 @@ def calibrate_vote_thresholds(nn_inds, nn_dists, pdata, cluster_layers, strength
 
 def apply_thresholds(best_labels, best_scores, thresholds):
     labels = best_labels.copy()
-    strengths = best_scores.copy()
+    # Summing float32 weights can overshoot 1 by an ulp (e.g. 1.0000001)
+    strengths = np.clip(best_scores, 0.0, 1.0)
     noise = (labels < 0) | (best_scores < thresholds[:, None])
     labels[noise] = -1
     strengths[noise] = 0.0

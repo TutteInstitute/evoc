@@ -159,12 +159,14 @@ def test_update_cluster_ids_stable(update_case):
     for layer, match in zip(model.cluster_layers_, model.update_layer_matches_):
         stability = adjusted_rand_score(old_labels, layer[:N_FIT])
         if best is None or stability > best[0]:
-            best = (stability, layer)
-    stability, layer = best
+            best = (stability, layer, match)
+    stability, layer, match = best
     assert stability >= min(refit_stability, 0.95) - 0.02
-    # Matched clusters keep their ids
-    clustered = (old_labels >= 0) & (layer[:N_FIT] >= 0)
-    assert np.mean(layer[:N_FIT][clustered] == old_labels[clustered]) >= 0.9
+    # Matched clusters keep their ids. update relabels each layer against the
+    # old layer it was matched to, which need not be the layer behind labels_
+    matched_old = update_case["old_layers"][match]
+    clustered = (matched_old >= 0) & (layer[:N_FIT] >= 0)
+    assert np.mean(layer[:N_FIT][clustered] == matched_old[clustered]) >= 0.9
     # New samples are clustered consistently with the ground truth
     new = layer[N_FIT:]
     assert adjusted_rand_score(y[N_FIT:][new >= 0], new[new >= 0]) >= 0.9
