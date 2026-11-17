@@ -289,6 +289,24 @@ class TestFindDuplicates:
         # Should find minimal or no duplicates
         assert isinstance(duplicates, set)
 
+    @pytest.mark.parametrize("dtype", [np.float32, np.int8])
+    def test_find_duplicates_exact_copies(self, dtype):
+        """Exact row copies are reported even when rounding makes their
+        distance slightly above zero, and nothing else is reported."""
+        from evoc.knn_graph import knn_graph
+
+        X, _ = make_blobs(200, n_features=32, centers=5, random_state=0)
+        data = np.vstack([X, X[:20]])
+        if dtype == np.int8:
+            data = np.clip(data * 10, -127, 127)
+        data = data.astype(dtype)
+        expected = {(i, 200 + i) for i in range(20)}
+
+        knn_inds, knn_dists = knn_graph(data, n_neighbors=15, random_state=0)
+        duplicates = find_duplicates(knn_inds, knn_dists)
+
+        assert duplicates == expected
+
 
 class TestBuildClusterTree:
     """Test the cluster tree building functionality."""
