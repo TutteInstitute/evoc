@@ -214,7 +214,8 @@ def _vote_row(
             ):
                 best = m
         best_labels[layer, i] = cluster_ids[best]
-        best_scores[layer, i] = cluster_scores[best] / total
+        # Rounding (fastmath, float32) can push the ratio just above 1
+        best_scores[layer, i] = min(cluster_scores[best] / total, np.float32(1.0))
 
 
 @numba.njit(parallel=True, fastmath=True, cache=True)
