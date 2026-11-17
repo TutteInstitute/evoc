@@ -398,9 +398,12 @@ def build_cluster_tree(labels):
     return result
 
 
+DUPLICATE_DISTANCE_TOLERANCE = 1e-5
+
+
 @numba.njit(cache=True)
 def find_duplicates(knn_inds, knn_dists):
-    duplicate_distance = np.max(knn_dists.T[0])
+    duplicate_distance = DUPLICATE_DISTANCE_TOLERANCE
     duplicates = set([(-1, -1) for i in range(0)])
     for i in range(knn_inds.shape[0]):
         for j in range(0, knn_inds.shape[1]):
