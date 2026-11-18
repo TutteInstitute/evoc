@@ -186,6 +186,34 @@ def original_label_prop_loop(
     return remap_labels(labels)
 
 
+_REDUCER_COLUMN_BLOCK = 32
+
+
+def _sparse_dense_product_by_columns(sparse_matrix, dense):
+    """``sparse_matrix @ dense`` one block of about 32 columns at a time.
+
+    scipy converts a float32 or int8 dense operand to the float64 dtype of the
+    sparse matrix before multiplying, which copies the whole input. Blocking
+    bounds that copy to about n_samples * 32 * 8 bytes. Each output column
+    depends only on the same input column, so the result is bit-identical to
+    the single product. Blocks have near-equal widths, so none is a single
+    column (scipy multiplies a single column with a different kernel). Inputs
+    that need no conversion, or are already narrow, use the single product.
+    """
+    dense = np.asarray(dense)
+    result_dtype = np.result_type(sparse_matrix.dtype, dense.dtype)
+    n_columns = dense.shape[1]
+    if dense.dtype == result_dtype or n_columns <= _REDUCER_COLUMN_BLOCK:
+        return sparse_matrix @ dense
+
+    result = np.empty((sparse_matrix.shape[0], n_columns), dtype=result_dtype)
+    n_blocks = -(-n_columns // _REDUCER_COLUMN_BLOCK)
+    for columns in np.array_split(np.arange(n_columns), n_blocks):
+        start, stop = columns[0], columns[-1] + 1
+        result[:, start:stop] = sparse_matrix @ dense[:, start:stop]
+    return result
+
+
 def label_propagation_init(
     graph,
     n_label_prop_iter=20,
@@ -330,7 +358,7 @@ def label_propagation_init(
     normalized_reduction_map = normalize(base_reduction_map, axis=0, norm="l2")
     data_reducer = normalize(normalized_reduction_map.T, norm="l1")
     if data is not None:
-        reduced_data = data_reducer @ data
+        reduced_data = _sparse_dense_product_by_columns(data_reducer, data)
     else:
         reduced_data = None
 
